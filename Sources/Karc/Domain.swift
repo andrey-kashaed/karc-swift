@@ -51,6 +51,14 @@ open class Domain<State: Equatable & Initable, Command, Event> {
         return try await commandGate.send(command)
     }
     
+    public final func receive() async throws -> Event {
+        try await eventGate.receive()
+    }
+    
+    public final func receive<SubEvent>() async throws -> SubEvent {
+        try await eventGate.receive()
+    }
+    
     public func receiver() -> AnyAsyncSequence<Event> {
         eventGate.receiver()
     }
