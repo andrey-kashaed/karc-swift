@@ -43,10 +43,11 @@ public class Pipeline {
         self.pipesProvider = pipesBuilder
     }
     
-    func start(loggable: Loggable?, modelId: String, onStatus: @escaping (PipeStatus) -> Void) {
+    func start(loggable: Loggable?, modelId: String, onStatus: @escaping (PipeStatus) -> Void) async {
         let beginPipe = beginPipeProvider()
         let endPipe = endPipeProvider()
         let pipes = pipesProvider()
+        let barrier = Barrier(partiesCount: pipes.count + 1, mode: .manual)
         task = Task<Void, Never> {
             if let beginPipe = beginPipe {
                 await beginPipe.run(loggable: loggable, modelId: modelId, pipelineId: id, onStatus: onStatus)
@@ -54,7 +55,7 @@ public class Pipeline {
             await withTaskGroup(of: Void.self) { taskGroup in
                 pipes.forEach { pipe in
                     let _ = taskGroup.addTaskUnlessCancelled {
-                        await pipe.run(loggable: loggable, modelId: modelId, pipelineId: self.id, onStatus: onStatus)
+                        await pipe.run(barrier: barrier, loggable: loggable, modelId: modelId, pipelineId: self.id, onStatus: onStatus)
                     }
                 }
                 await taskGroup.waitForAll()
@@ -64,9 +65,10 @@ public class Pipeline {
             }
             if restarting && !stopping {
                 restarting = false
-                start(loggable: loggable, modelId: modelId, onStatus: onStatus)
+                await start(loggable: loggable, modelId: modelId, onStatus: onStatus)
             }
         }
+        try? await barrier.await()
     }
     
     func stop() {

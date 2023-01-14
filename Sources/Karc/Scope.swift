@@ -35,12 +35,12 @@ public class Scope<State> {
         self.pipelineProviders = pipelineProviders
     }
     
-    func activateOnDemand(environ: Environ, loggable: Loggable?, modelId: String, state: State) {
+    func activateOnDemand(environ: Environ, loggable: Loggable?, modelId: String, state: State) async {
         if !isActive && spec.isSatisfiedBy(state) {
             onEnter(environ, state)
             pipelines = pipelineProviders.map { $0() }
-            pipelines.forEach { pipeline in
-                pipeline.start(loggable: loggable, modelId: modelId, onStatus: { pipeStatus in
+            await pipelines.forEachAsync { pipeline in
+                await pipeline.start(loggable: loggable, modelId: modelId, onStatus: { pipeStatus in
                     switch pipeStatus {
                     case .start(let pipeId, let time):
                         loggable?.info("[\(modelId)|\(pipeline.id)|\(pipeId)] START time: \(Date(milliseconds: time).defaultFormat)")

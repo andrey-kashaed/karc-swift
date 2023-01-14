@@ -69,7 +69,7 @@ public struct Pipe {
     }
     
     let id: String
-    let runnable: (Loggable?, String, String, @escaping (PipeStatus) -> Void) async -> Void
+    let runnable: (Barrier?, Loggable?, String, String, @escaping (PipeStatus) -> Void) async -> Void
     
     public init<SI, SO, TI, TO>(
         id: String,
@@ -101,7 +101,7 @@ public struct Pipe {
         track: @escaping (Loggable) -> IO<TI, TO>
     ) {
         self.id = id
-        self.runnable = { (loggable: Loggable?, modelId: String, pipelineId: String, onStatus: @escaping (PipeStatus) -> Void) in
+        self.runnable = { (barrier: Barrier?, loggable: Loggable?, modelId: String, pipelineId: String, onStatus: @escaping (PipeStatus) -> Void) in
             let log = PipeLog(loggable: loggable, modelId: modelId, pipelineId: pipelineId, pipeId: id)
             let refinedTrack = Pipe.buildRefinedTrack(
                 track: track,
@@ -109,7 +109,7 @@ public struct Pipe {
                 log: log,
                 pipeId: id
             )
-            let flow: () -> AnyAsyncSequence<Any> = {
+            let flowFactory: () -> AnyAsyncSequence<Any> = {
                 switch mode {
                 case .simplex(let instantOutput, let intro, let outro):
                     let seq: AnyAsyncSequence<TO> = {
@@ -166,8 +166,9 @@ public struct Pipe {
             await Pipe.execute(
                 pipeId: id,
                 onStatus: onStatus,
-                flow: flow,
-                interruptOnError: interruptOnError
+                flowFactory: flowFactory,
+                interruptOnError: interruptOnError,
+                barrier: barrier
             )
         }
     }
@@ -179,7 +180,7 @@ public struct Pipe {
         track: @escaping (Loggable) -> IO<Void, Void>
     ) {
         self.id = id
-        self.runnable = { (loggable: Loggable?, modelId: String, pipelineId: String, onStatus: @escaping (PipeStatus) -> Void) in
+        self.runnable = { (barrier: Barrier?, loggable: Loggable?, modelId: String, pipelineId: String, onStatus: @escaping (PipeStatus) -> Void) in
             let log = PipeLog(loggable: loggable, modelId: modelId, pipelineId: pipelineId, pipeId: id)
             let refinedTrack = Pipe.buildRefinedTrack(
                 track: track,
@@ -187,18 +188,20 @@ public struct Pipe {
                 log: log,
                 pipeId: id
             )
+            let flowFactory: () -> AnyAsyncSequence<Any> = {
+                switch policy {
+                case .finite(let count):
+                    return iterate(count: count).map({ try await refinedTrack($0) }).map { $0 as Any }.eraseToAnyAsyncSequence()
+                case .infinite:
+                    return iterate().map({ try await refinedTrack($0) }).map { $0 as Any }.eraseToAnyAsyncSequence()
+                }
+            }
             await Pipe.execute(
                 pipeId: id,
                 onStatus: onStatus,
-                flow: {
-                    switch policy {
-                    case .finite(let count):
-                        return iterate(count: count).map({ try await refinedTrack($0) }).map { $0 as Any }.eraseToAnyAsyncSequence()
-                    case .infinite:
-                        return iterate().map({ try await refinedTrack($0) }).map { $0 as Any }.eraseToAnyAsyncSequence()
-                    }
-                },
-                interruptOnError: interruptOnError
+                flowFactory: flowFactory,
+                interruptOnError: interruptOnError,
+                barrier: barrier
             )
         }
     }
@@ -242,15 +245,18 @@ public struct Pipe {
     private static func execute(
         pipeId: String,
         onStatus: @escaping (PipeStatus) -> Void,
-        flow: () -> AnyAsyncSequence<Any>,
-        interruptOnError: Bool
+        flowFactory: () -> AnyAsyncSequence<Any>,
+        interruptOnError: Bool,
+        barrier: Barrier?
     ) async {
         let executionStartTime: Int64 = Date().millisecondsSince1970
         onStatus(.start(pipeId: pipeId, time: executionStartTime))
         var flowError: Error? = nil
+        let flow = flowFactory()
+        try? await barrier?.await()
         while true {
             do {
-                for try await _ in flow() {}
+                for try await _ in flow {}
             } catch {
                 flowError = error
                 if !Task.isCancelled && !interruptOnError {
@@ -299,8 +305,8 @@ public struct Pipe {
         }
     }
     
-    func run(loggable: Loggable?, modelId: String, pipelineId: String, onStatus: @escaping (PipeStatus) -> Void) async {
-        await runnable(loggable, modelId, pipelineId, onStatus)
+    func run(barrier: Barrier? = nil, loggable: Loggable?, modelId: String, pipelineId: String, onStatus: @escaping (PipeStatus) -> Void) async {
+        await runnable(barrier, loggable, modelId, pipelineId, onStatus)
     }
     
 }

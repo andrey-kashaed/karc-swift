@@ -102,7 +102,7 @@ open class Model<Domain, State: Equatable & Initable, Command, Effect, Event> wh
                         self.domain.resetCommandBarrier()
                         await self.domain.setState(state: newState)
                         //loggable?.info("[\(id)] state: \(state)")
-                        self.activateScopesOnDemand(scopes: scopes, environ: self.environ, state: newState)
+                        await self.activateScopesOnDemand(scopes: scopes, environ: self.environ, state: newState)
                         self.domain.signalCommandBarrier()
                         loggable?.info("[\(id)] Did reduce: \(events)")
                         self.didReduce(state: newState, events: events)
@@ -146,9 +146,9 @@ open class Model<Domain, State: Equatable & Initable, Command, Effect, Event> wh
     
     open func didReduce(state: State, events: [Event]) {}
     
-    private func activateScopesOnDemand(scopes: [Scope<State>], environ: Environ, state: State) {
-        scopes.forEach { scope in
-            scope.activateOnDemand(environ: environ, loggable: loggable(environ: environ), modelId: id, state: state)
+    private func activateScopesOnDemand(scopes: [Scope<State>], environ: Environ, state: State) async {
+        await scopes.forEachAsync { scope in
+            await scope.activateOnDemand(environ: environ, loggable: loggable(environ: environ), modelId: id, state: state)
         }
     }
     

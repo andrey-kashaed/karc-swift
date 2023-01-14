@@ -91,6 +91,7 @@ open class Domain<State: Equatable & Initable, Command, Event> {
     internal func seal() {
         commandGate.seal()
         eventGate.seal()
+        signalCommandBarrier()
     }
     
     internal func resetCommandBarrier() {

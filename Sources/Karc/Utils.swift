@@ -94,6 +94,16 @@ internal extension Array {
     
 }
 
+internal extension Sequence {
+    
+    func forEachAsync(_ operation: (Element) async throws -> Void) async rethrows {
+        for element in self {
+            try await operation(element)
+        }
+    }
+    
+}
+
 internal extension Date {
     
     var millisecondsSince1970: Int64 {
