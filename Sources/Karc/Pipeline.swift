@@ -17,9 +17,9 @@ import Kasync
 public class Pipeline {
     
     public let id: String
-    private let beginPipeProvider: () -> Pipe?
-    private let endPipeProvider: () -> Pipe?
-    private let pipesProvider: () -> [Pipe]
+    private let beginPipeFactory: () -> Pipe?
+    private let endPipeFactory: () -> Pipe?
+    private let pipesFactory: () -> [Pipe]
     private var task: Task<Void, Never>?
     
     @Atomic private var stopping = false
@@ -29,24 +29,24 @@ public class Pipeline {
         id: String = #function,
         begin: ((Loggable) -> IO<Void, Void>)? = nil,
         end: ((Loggable) -> IO<Void, Void>)? = nil,
-        @PipeBuilder pipesBuilder: @escaping () -> [Pipe]
+        @PipeBuilder pipesFactory: @escaping () -> [Pipe]
     ) {
         self.id = id.components(separatedBy: "(").getOrNil(0) ?? id
-        self.beginPipeProvider = {
+        self.beginPipeFactory = {
             guard let track = begin else { return nil }
             return Pipe(id: "begin", policy: .finite(count: 1), track: track)
         }
-        self.endPipeProvider = {
+        self.endPipeFactory = {
             guard let track = end else { return nil }
             return Pipe(id: "end", policy: .finite(count: 1), track: track)
         }
-        self.pipesProvider = pipesBuilder
+        self.pipesFactory = pipesFactory
     }
     
     func start(loggable: Loggable?, modelId: String, onStatus: @escaping (PipeStatus) -> Void) async {
-        let beginPipe = beginPipeProvider()
-        let endPipe = endPipeProvider()
-        let pipes = pipesProvider()
+        let beginPipe = beginPipeFactory()
+        let endPipe = endPipeFactory()
+        let pipes = pipesFactory()
         let barrier = Barrier(partiesCount: pipes.count + 1, mode: .manual)
         task = Task<Void, Never> {
             if let beginPipe = beginPipe {

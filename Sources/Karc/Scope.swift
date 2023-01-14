@@ -18,7 +18,7 @@ public class Scope<State> {
     let spec: TSpec<State>
     let onEnter: (Environ, State) -> Void
     let onExit: (Environ, State) -> Void
-    let pipelineProviders: [() -> Pipeline]
+    let pipelineFactories: [() -> Pipeline]
     
     private(set) var isActive = false
     private var pipelines: [Pipeline] = []
@@ -27,18 +27,18 @@ public class Scope<State> {
         spec: TSpec<State>,
         onEnter: @escaping (Environ, State) -> Void = { _, _ in },
         onExit: @escaping (Environ, State) -> Void = { _, _ in },
-        _ pipelineProviders: () -> Pipeline...
+        _ pipelineFactories: () -> Pipeline...
     ) {
         self.spec = spec
         self.onEnter = onEnter
         self.onExit = onExit
-        self.pipelineProviders = pipelineProviders
+        self.pipelineFactories = pipelineFactories
     }
     
     func activateOnDemand(environ: Environ, loggable: Loggable?, modelId: String, state: State) async {
         if !isActive && spec.isSatisfiedBy(state) {
             onEnter(environ, state)
-            pipelines = pipelineProviders.map { $0() }
+            pipelines = pipelineFactories.map { $0() }
             await pipelines.forEachAsync { pipeline in
                 await pipeline.start(loggable: loggable, modelId: modelId, onStatus: { pipeStatus in
                     switch pipeStatus {
