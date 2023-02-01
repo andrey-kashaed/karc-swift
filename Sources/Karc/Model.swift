@@ -18,28 +18,23 @@ public typealias Combiner<State, Element> = (State, [Element]) -> [Element]
 
 public typealias Reducer<State, Input, Output> = (State, Input) -> (State, [Output])
 
-public typealias Scopes<State: Equatable, Command, Effect, Event> = (Interactor<State, Command, Effect, Event>) -> [Scope<State>]
-
 open class Model<Domain, State: Equatable & Initable, Command, Effect, Event> where Domain: Karc.Domain<State, Command, Event> {
     
     public struct Config {
         var environ: Environ
+        public var id: String
         public var state: State
-        var receiver: ((State, Event, AnyDrain<Command, Any>) async throws -> Void)?
-        public init(environ: Environ, state: State = State(), receiver: ((State, Event, AnyDrain<Command, Any>) async throws -> Void)? = nil) {
+        public init(environ: Environ, id: String = "", state: State = State()) {
             self.environ = environ
+            self.id = id
             self.state = state
-            self.receiver = receiver
         }
     }
     
+    public let uid: String
+    public let id: String
     private let environ: Environ
-    private let receiver: ((State, Event, AnyDrain<Command, Any>) async throws -> Void)?
     private var task: Task<Void, Never>?
-    
-    open var id: String {
-        String(describing: type(of: self))
-    }
     
     open func loggable(environ: Environ) -> Loggable? {
         nil
@@ -49,10 +44,8 @@ open class Model<Domain, State: Equatable & Initable, Command, Effect, Event> wh
         fatalError("This method must be overridden")
     }
     
-    open var scopes: Scopes<State, Command, Effect, Event> {
-        { _ in
-            []
-        }
+    open func scopes() -> [Scope<State, Command, Effect, Event>] {
+        []
     }
     
     open var effectCombiner: Combiner<State, Effect> {
@@ -63,54 +56,59 @@ open class Model<Domain, State: Equatable & Initable, Command, Effect, Event> wh
     private let effectGate = Gate<[Effect], [Event]>(mode: Gate.Mode.cumulative(), scheme: .anycast)
     
     required public init(config: Config) {
+        uid = String(describing: Domain.self).replacingOccurrences(of: "Domain", with: "") + config.id
+        id = config.id
         environ = config.environ
         domain = Domain(state: config.state)
-        receiver = config.receiver
         if let loggable = loggable(environ: environ) {
-            loggable.debug("[\(id)] INIT")
+            loggable.debug("[\(uid)] INIT")
         }
     }
     
     deinit {
         if let loggable = loggable(environ: environ) {
-            loggable.debug("[\(id)] DEINIT")
+            loggable.debug("[\(uid)] DEINIT")
         }
     }
     
     final public func setUp() {
         let loggable = loggable(environ: environ)
-        loggable?.debug("[\(id)] SET UP")
+        loggable?.debug("[\(uid)] SET UP")
         domain.resetCommandBarrier()
         task = Task {
-            let scopes = scopes(Interactor(environ: environ, stateGetter: { [weak self] in await self?.domain.state ?? State() }, commandSource: domain.commandSource, commandDrain: domain.commandDrain, effectDrain: effectGate.asDrain, eventSource: domain.eventSource))
-            await activateScopesOnDemand(scopes: scopes, environ: environ, state: domain.state)
+            let scopes = self.scopes()
+            let interactor = Interactor(
+                environ: self.environ,
+                stateGetter: { [weak self] in await self?.domain.state ?? State() },
+                commandSource: self.domain.commandSource,
+                commandDrain: self.domain.commandDrain,
+                effectDrain: self.effectGate.asDrain,
+                eventSource: self.domain.eventSource
+            )
+            await self.activateScopesOnDemand(scopes: scopes, environ: self.environ, state: self.domain.state, interactor: interactor)
             self.domain.signalCommandBarrier()
             do {
-                let commandDrain = domain.commandDrain
-                let eventDrain = domain.eventDrain
-                let receiver = receiver
                 while true {
-                    try await effectGate.process { [unowned self] (effects: [Effect]) -> [Event] in
-                        loggable?.info("[\(id)] Will reduce: \(effects)")
+                    try await self.effectGate.process { (effects: [Effect]) -> [Event] in
+                        loggable?.info("[\(uid)] Will reduce: \(effects)")
                         let oldState = await self.domain.state
                         self.willReduce(state: oldState, effects: effects)
-                        let (newState, events) = effectCombiner(oldState, effects).reduce((oldState, [Event]())) { stateEvents, effect in
-                            let (state, events) = reducer(stateEvents.0, effect)
+                        let (newState, events) = self.effectCombiner(oldState, effects).reduce((oldState, [Event]())) { stateEvents, effect in
+                            let (state, events) = self.reducer(stateEvents.0, effect)
                             return (state, stateEvents.1 + events)
                         }
                         if oldState == newState && events.isEmpty { return [] }
                         self.domain.resetCommandBarrier()
                         await self.domain.setState(state: newState)
                         //loggable?.info("[\(id)] state: \(state)")
-                        await self.activateScopesOnDemand(scopes: scopes, environ: self.environ, state: newState)
+                        await self.activateScopesOnDemand(scopes: scopes, environ: self.environ, state: newState, interactor: interactor)
                         self.domain.signalCommandBarrier()
-                        loggable?.info("[\(id)] Did reduce: \(events)")
+                        loggable?.info("[\(uid)] Did reduce: \(events)")
                         self.didReduce(state: newState, events: events)
                         self.deactivateScopesOnDemand(scopes: scopes, environ: self.environ, state: newState)
                         for event in events {
-                            Task {
-                                try? await eventDrain.send(event)
-                                try? await receiver?(newState, event, commandDrain)
+                            Task { [weak self] in
+                                try? await self?.domain.eventDrain.send(event)
                             }
                         }
                         return events
@@ -119,18 +117,18 @@ open class Model<Domain, State: Equatable & Initable, Command, Effect, Event> wh
             } catch {
                 switch error {
                 case is CancellationError:
-                    loggable?.debug("[\(id)] Effect gate is canceled")
+                    loggable?.debug("[\(uid)] Effect gate is canceled")
                 default:
-                    loggable?.error("[\(id)] Effect gate critical error: \(error.localizedDescription)")
+                    loggable?.error("[\(uid)] Effect gate critical error: \(error.localizedDescription)")
                 }
             }
-            await deactivateScopesOnDemand(scopes: scopes, environ: environ, state: domain.state, force: true)
+            await self.deactivateScopesOnDemand(scopes: scopes, environ: self.environ, state: self.domain.state, force: true)
         }
         onSetUp()
     }
     
     final public func tearDown() {
-        loggable(environ: environ)?.debug("[\(id)] TEAR DOWN")
+        loggable(environ: environ)?.debug("[\(uid)] TEAR DOWN")
         task?.cancel()
         task = nil
         domain.seal()
@@ -146,13 +144,13 @@ open class Model<Domain, State: Equatable & Initable, Command, Effect, Event> wh
     
     open func didReduce(state: State, events: [Event]) {}
     
-    private func activateScopesOnDemand(scopes: [Scope<State>], environ: Environ, state: State) async {
+    private func activateScopesOnDemand(scopes: [Scope<State, Command, Effect, Event>], environ: Environ, state: State, interactor: Interactor<State, Command, Effect, Event>) async {
         await scopes.forEachAsync { scope in
-            await scope.activateOnDemand(environ: environ, loggable: loggable(environ: environ), modelId: id, state: state)
+            await scope.activateOnDemand(environ: environ, loggable: loggable(environ: environ), modelUid: uid, modelId: id, state: state, interactor: interactor)
         }
     }
     
-    private func deactivateScopesOnDemand(scopes: [Scope<State>], environ: Environ, state: State, force: Bool = false) {
+    private func deactivateScopesOnDemand(scopes: [Scope<State, Command, Effect, Event>], environ: Environ, state: State, force: Bool = false) {
         scopes.forEach { scope in
             scope.deactivateOnDemand(environ: environ, state: state, force: force)
         }

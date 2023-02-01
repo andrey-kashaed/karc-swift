@@ -14,11 +14,6 @@
 import Foundation
 import Kasync
 
-public typealias Spec = Kasync.Spec
-public typealias TSpec = Kasync.TSpec
-public typealias FalseSpec = Kasync.FalseSpec
-public typealias TrueSpec = Kasync.TrueSpec
-
 public protocol Initable {
     init()
 }
@@ -44,6 +39,10 @@ public func % <I, O>(
             throw error
         }
     }
+}
+
+public struct NilUnwrappingError: LocalizedError {
+    public var errorDescription: String? { "Unexpectedly found nil while unwrapping an Optional value" }
 }
 
 internal extension NSLocking {

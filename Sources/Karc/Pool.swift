@@ -30,49 +30,51 @@ public func setDefaultDomainHandler(_ handler: @escaping (String) -> Void) {
 public extension Domain {
     
     static var get: Self {
-        let key = String(describing: Self.self)
-        return lock.synchronized {
-            pool.domains[key] as! Self
+        get throws {
+            let uid = String(describing: Self.self).replacingOccurrences(of: "Domain", with: "")
+            return try lock.synchronized {
+                try pool.domains[uid] as? Self ?? { throw NilUnwrappingError() }()
+            }
         }
     }
     
-    static func get(id: Any) -> Self {
-        let key = String(describing: Self.self) + "\(id)"
-        return lock.synchronized {
-            pool.domains[key] as! Self
+    static func get(id: String) throws -> Self {
+        let uid = String(describing: Self.self).replacingOccurrences(of: "Domain", with: "") + id
+        return try lock.synchronized {
+            try pool.domains[uid] as? Self ?? { throw NilUnwrappingError() }()
         }
     }
     
     static var getOrNil: Self? {
-        let key = String(describing: Self.self)
+        let uid = String(describing: Self.self).replacingOccurrences(of: "Domain", with: "")
         return lock.synchronized {
-            pool.domains[key] as? Self
+            pool.domains[uid] as? Self
         }
     }
     
-    static func getOrNil(id: Any) -> Self? {
-        let key = String(describing: Self.self) + "\(id)"
+    static func getOrNil(id: String) -> Self? {
+        let uid = String(describing: Self.self).replacingOccurrences(of: "Domain", with: "") + id
         return lock.synchronized {
-            pool.domains[key] as? Self
+            pool.domains[uid] as? Self
         }
     }
     
     static var getOrDefault: Self {
-        let key = String(describing: Self.self)
+        let uid = String(describing: Self.self).replacingOccurrences(of: "Domain", with: "")
         return lock.synchronized {
-            pool.domains[key] as? Self
+            pool.domains[uid] as? Self
         } ?? {
-            pool.defaultDomainHandler?(key)
+            pool.defaultDomainHandler?(uid)
             return Self(state: State())
         }()
     }
     
-    static func getOrDefault(id: Any) -> Self {
-        let key = String(describing: Self.self) + "\(id)"
+    static func getOrDefault(id: String) -> Self {
+        let uid = String(describing: Self.self).replacingOccurrences(of: "Domain", with: "") + id
         return lock.synchronized {
-            pool.domains[key] as? Self
+            pool.domains[uid] as? Self
         } ?? {
-            pool.defaultDomainHandler?(key)
+            pool.defaultDomainHandler?(uid)
             return Self(state: State())
         }()
     }
@@ -81,25 +83,29 @@ public extension Domain {
 
 public extension Model {
     
-    static func setUp(id: Any = "", _ config: Config) {
-        let key = String(describing: Domain.self) + "\(id)"
+    static func setUp(_ config: Config) {
+        let uid = String(describing: Domain.self).replacingOccurrences(of: "Domain", with: "") + config.id
         lock.synchronized {
             let model = Self(config: config)
-            pool.models[key] = model
-            pool.domains[key] = model.domain
+            pool.models[uid] = model
+            pool.domains[uid] = model.domain
             model.setUp()
         }
     }
     
-    static func tearDown(id: Any = "") {
-        let key = String(describing: Domain.self) + "\(id)"
+    static func tearDown(id: String = "") {
+        let uid = String(describing: Domain.self).replacingOccurrences(of: "Domain", with: "") + id
         lock.synchronized {
-            pool.domains.removeValue(forKey: key)
-            guard let model = pool.models.removeValue(forKey: key) as? Self else {
+            pool.domains.removeValue(forKey: uid)
+            guard let model = pool.models.removeValue(forKey: uid) as? Self else {
                 return
             }
             model.tearDown()
         }
+    }
+    
+    static func submodel(id: String = "", state: State = State()) -> Submodel {
+        Submodel(type: Self.self, id: id, state: state)
     }
     
 }

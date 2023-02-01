@@ -84,3 +84,24 @@ public class Pipeline {
     }
  
 }
+
+@resultBuilder
+public struct PipelineBuilder {
+    
+    public static func buildBlock() -> [Pipeline] {
+        []
+    }
+    
+    public static func buildBlock(_ pipelines: [Pipeline]...) -> [Pipeline] {
+        pipelines.flatMap { $0 }
+    }
+    
+    public static func buildArray(_ pipelines: [[Pipeline]]) -> [Pipeline] {
+        pipelines.flatMap { $0 }
+    }
+    
+    public static func buildExpression(_ pipeline: Pipeline) -> [Pipeline] {
+        [pipeline]
+    }
+    
+}

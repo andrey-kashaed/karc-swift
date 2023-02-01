@@ -37,9 +37,13 @@ open class Domain<State: Equatable & Initable, Command, Event> {
         stateGuardian = StateGuardian(state: state)
     }
     
+    deinit {
+        seal()
+    }
+    
     open func observe(state: State) {}
     
-    public var state: State {
+    public final var state: State {
         get async {
             await stateGuardian.state
         }
@@ -59,11 +63,11 @@ open class Domain<State: Equatable & Initable, Command, Event> {
         try await eventGate.receive()
     }
     
-    public func receiver() -> AnyAsyncSequence<Event> {
+    public final func receiver() -> AnyAsyncSequence<Event> {
         eventGate.receiver()
     }
     
-    public func receiver<SubEvent>() -> AnyAsyncSequence<SubEvent> {
+    public final func receiver<SubEvent>() -> AnyAsyncSequence<SubEvent> {
         eventGate.receiver()
     }
     
@@ -76,11 +80,11 @@ open class Domain<State: Equatable & Initable, Command, Event> {
         commandGate.asSource
     }
     
-    internal var commandDrain: AnyDrain<Command, Any> {
+    public final var commandDrain: AnyDrain<Command, Any> {
         commandGate.asDrain
     }
     
-    internal var eventSource: AnySource<Event, Void> {
+    public final var eventSource: AnySource<Event, Void> {
         eventGate.asSource
     }
     
