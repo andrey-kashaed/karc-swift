@@ -257,7 +257,7 @@ public struct Pipe: Sendable {
                 case .finite(let count):
                     return iterate(count: count).map({ try await refinedTrack($0, context) })*!
                 case .infinite:
-                    return iterate().map({ try await refinedTrack($0, context) })*!
+                    return iterateInfinitely().map({ try await refinedTrack($0, context) })*!
                 }
             }
             await Pipe.execute(
