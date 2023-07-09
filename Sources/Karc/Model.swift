@@ -89,15 +89,15 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
         uid = Uid(tag: String(describing: Self.self), id: config.id).asAny
         environ = config.environ
         domain = Domain(id: config.id, state: config.state)
-        logger.trace("[\(uid)] INIT")
+        logger.traceBlocking("[\(uid)] INIT")
     }
     
     deinit {
-        logger.trace("[\(uid)] DEINIT")
+        logger.traceBlocking("[\(uid)] DEINIT")
     }
     
-    final public func setUp() {
-        willSetUp()
+    final public func setUp() async {
+        await willSetUp()
         domain.enableCommandSemaphore()
         task = Task.detached(priority: priority) {
             var scopes: [Scope] = []
@@ -114,7 +114,7 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
             while true {
                 _ = try? await self.effectGate.process { (effects: [Effect]) -> [Event] in
                     let oldState = await self.domain.state
-                    self.willReduce(state: oldState, effects: effects)
+                    await self.willReduce(state: oldState, effects: effects)
                     let (newState, events) = self.combiner(state: oldState, effects: effects).reduce((oldState, [Event]())) { stateEvents, effect in
                         let (state, events) = self.reducer(state: stateEvents.0, effect: effect)
                         return (state, stateEvents.1 + events)
@@ -125,7 +125,7 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
                     await self.resolveScopesForState(scopes: &scopes, environ: self.environ, state: newState, interactor: interactor)
                     await self.domain.observeState()
                     self.domain.signalAndDisableCommandSemaphore()
-                    self.didReduce(state: newState, events: events)
+                    await self.didReduce(state: newState, events: events)
                     let priority = Task.currentPriority
                     for event in events {
                         Task.detached(priority: priority) { [weak self] in
@@ -141,42 +141,42 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
             await scopes.forEachAsync { scope in
                 await scope.deactivate(environ: self.environ, logger: self.logger, modelUid: self.uid)
             }
-            self.logger.trace("[\(self.uid)] Task is terminated")
+            await self.logger.trace("[\(self.uid)] Task is terminated")
         }
-        didSetUp()
+        await didSetUp()
     }
     
-    final public func tearDown() {
-        willTearDown()
+    final public func tearDown() async {
+        await willTearDown()
         task?.cancel()
         task = nil
         domain.seal()
         effectGate.seal()
-        didTearDown()
+        await didTearDown()
     }
     
-    open func willSetUp() {
-        logger.trace("[\(uid)] WILL SET UP")
+    open func willSetUp() async {
+        await logger.trace("[\(uid)] WILL SET UP")
     }
     
-    open func didSetUp() {
-        logger.trace("[\(uid)] DID SET UP")
+    open func didSetUp() async {
+        await logger.trace("[\(uid)] DID SET UP")
     }
     
-    open func willTearDown() {
-        logger.trace("[\(uid)] WILL TEAR DOWN")
+    open func willTearDown() async {
+        await logger.trace("[\(uid)] WILL TEAR DOWN")
     }
     
-    open func didTearDown() {
-        logger.trace("[\(uid)] DID TEAR DOWN")
+    open func didTearDown() async {
+        await logger.trace("[\(uid)] DID TEAR DOWN")
     }
     
-    open func willReduce(state: State, effects: [Effect]) {
-        logger.trace("[\(uid)] Will reduce: \(effects)")
+    open func willReduce(state: State, effects: [Effect]) async {
+        await logger.trace("[\(uid)] Will reduce: \(effects)")
     }
     
-    open func didReduce(state: State, events: [Event]) {
-        logger.trace("[\(uid)] Did reduce: \(events)")
+    open func didReduce(state: State, events: [Event]) async {
+        await logger.trace("[\(uid)] Did reduce: \(events)")
     }
     
     private func resolveScopesForState(scopes: inout [Scope], environ: Environ, state: State, interactor: Interactor) async {
@@ -204,23 +204,23 @@ public extension Model {
     
     static func setUp(_ config: Config) async {
         let domainUid = Uid(tag: String(describing: Domain.self), id: config.id).asAny
+        let model = Self(config: config)
         await Pool.shared.withTransaction {
-            let model = Self(config: config)
             $0.setModelUnsafe(model, uid: domainUid)
             $0.setDomainUnsafe(model.domain, uid: domainUid)
-            model.setUp()
         }
+        await model.setUp()
     }
     
     static func tearDown(id: Id = DefaultId.shared) async {
         let domainUid = Uid(tag: String(describing: Domain.self), id: id).asAny
-        await Pool.shared.withTransaction {
+        guard let model = await Pool.shared.withTransaction({
             $0.removeDomainUnsafe(uid: domainUid)
-            guard let model = $0.removeModelUnsafe(uid: domainUid) as? Self else {
-                return
-            }
-            model.tearDown()
+            return $0.removeModelUnsafe(uid: domainUid) as? Self
+        }) else {
+            return
         }
+        await model.tearDown()
     }
     
     static func setUpBlocking(_ config: Config) {

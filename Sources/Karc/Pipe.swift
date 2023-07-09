@@ -70,9 +70,9 @@ public final actor PipeContext {
         }
     }
     
-    fileprivate func setPipeState(_ pipeState: PipeState) {
+    fileprivate func setPipeState(_ pipeState: PipeState) async {
         let now = ContinuousClock.Instant.now
-        logTrace("\(pipeState.rawValue) <= \(internalPipeState.rawValue)(stateTime: \(now - stateModified))")
+        await logTrace("\(pipeState.rawValue) <= \(internalPipeState.rawValue)(stateTime: \(now - stateModified))")
         internalPipeState = pipeState
         stateModified = now
     }
@@ -81,53 +81,53 @@ public final actor PipeContext {
     fileprivate func applyPipeStatus(_ pipeStatus: PipeStatus) async -> Bool {
         switch pipeStatus {
         case .started:
-            guard trackStarted == nil else { logError("Concurrent attempt to start track is forbidden"); return false }
+            guard trackStarted == nil else { await logError("Concurrent attempt to start track is forbidden"); return false }
             let now = ContinuousClock.Instant.now
             trackStarted = now
             let stateTime = now - stateModified
-            logTrace("STARTED stateTime: \(stateTime)")
+            await logTrace("STARTED stateTime: \(stateTime)")
         case .stopped(let error):
-            guard let trackStarted = trackStarted else { logError("Concurrent attempt to stop track is forbidden"); return false }
+            guard let trackStarted = trackStarted else { await logError("Concurrent attempt to stop track is forbidden"); return false }
             self.trackStarted = nil
             let now = ContinuousClock.Instant.now
             let stateTime = now - stateModified
             let trackTime = now - trackStarted
-            logTrace("STOPPED stateTime: \(stateTime), trackTime: \(trackTime), error: \(String(describing: error))")
+            await logTrace("STOPPED stateTime: \(stateTime), trackTime: \(trackTime), error: \(String(describing: error))")
         case .flushed:
             let stateTime = ContinuousClock.Instant.now - stateModified
-            logTrace("FLUSHED stateTime: \(stateTime)")
+            await logTrace("FLUSHED stateTime: \(stateTime)")
         case .interrupted(let error):
             let stateTime = ContinuousClock.Instant.now - stateModified
-            logWarning("INTERRUPTED stateTime: \(stateTime), error: \(error)")
+            await logWarning("INTERRUPTED stateTime: \(stateTime), error: \(error)")
         case .broken(let error):
             let stateTime = ContinuousClock.Instant.now - stateModified
-            logError("BROKEN stateTime: \(stateTime), error: \(error)")
+            await logError("BROKEN stateTime: \(stateTime), error: \(error)")
             await pipeline?.relaunch()
         case .finished(let canceled):
             let stateTime = ContinuousClock.Instant.now - stateModified
-            logTrace("FINISHED stateTime: \(stateTime), canceled: \(canceled)")
+            await logTrace("FINISHED stateTime: \(stateTime), canceled: \(canceled)")
         }
         return true
     }
     
-    nonisolated public func logError(priority: Int = LogPriority.highest, _ message: String) {
-        logger.error(priority: priority, "[\(modelUid)|\(pipelineUid):\(pipeId)] \(message)")
+    nonisolated public func logError(priority: Int = LogPriority.highest, _ message: String) async {
+        await logger.error(priority: priority, "[\(modelUid)|\(pipelineUid):\(pipeId)] \(message)")
     }
     
-    nonisolated public func logWarning(priority: Int = LogPriority.high, _ message: String) {
-        logger.warning(priority: priority, "[\(modelUid)|\(pipelineUid):\(pipeId)] \(message)")
+    nonisolated public func logWarning(priority: Int = LogPriority.high, _ message: String) async {
+        await logger.warning(priority: priority, "[\(modelUid)|\(pipelineUid):\(pipeId)] \(message)")
     }
     
-    nonisolated public func logInfo(priority: Int = LogPriority.medium, _ message: String) {
-        logger.info(priority: priority, "[\(modelUid)|\(pipelineUid):\(pipeId)] \(message)")
+    nonisolated public func logInfo(priority: Int = LogPriority.medium, _ message: String) async {
+        await logger.info(priority: priority, "[\(modelUid)|\(pipelineUid):\(pipeId)] \(message)")
     }
     
-    nonisolated public func logDebug(priority: Int = LogPriority.low, _ message: String) {
-        logger.debug(priority: priority, "[\(modelUid)|\(pipelineUid):\(pipeId)] \(message)")
+    nonisolated public func logDebug(priority: Int = LogPriority.low, _ message: String) async {
+        await logger.debug(priority: priority, "[\(modelUid)|\(pipelineUid):\(pipeId)] \(message)")
     }
     
-    nonisolated public func logTrace(priority: Int = LogPriority.lowest, _ message: String) {
-        logger.trace(priority: priority, "[\(modelUid)|\(pipelineUid):\(pipeId)] \(message)")
+    nonisolated public func logTrace(priority: Int = LogPriority.lowest, _ message: String) async {
+        await logger.trace(priority: priority, "[\(modelUid)|\(pipelineUid):\(pipeId)] \(message)")
     }
     
 }

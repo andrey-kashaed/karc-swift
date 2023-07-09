@@ -11,6 +11,7 @@
 // https://opensource.org/licenses/CDDL-1.0 or LICENSE.txt.
 //
 
+import Kasync
 import OSLog
 
 public struct LogPriority {
@@ -44,46 +45,126 @@ public struct Logger: Sendable {
         self.enabled = enabled
     }
     
-    public func error(priority: Int = LogPriority.highest, _ message: String) {
+    public func error(priority: Int = LogPriority.highest, _ message: String) async {
         guard enabled else { return }
         for log in logs {
-            Task.detached {
+            await log.error(priority: priority, message)
+        }
+    }
+    
+    public func errorBlocking(priority: Int = LogPriority.highest, _ message: String) {
+        guard enabled else { return }
+        runBlocking {
+            for log in logs {
                 await log.error(priority: priority, message)
             }
         }
     }
     
-    public func warning(priority: Int = LogPriority.high, _ message: String) {
+    public func errorDetached(priority: Int = LogPriority.highest, _ message: String) {
+        guard enabled else { return }
+        Task.detached {
+            for log in logs {
+                await log.error(priority: priority, message)
+            }
+        }
+    }
+    
+    public func warning(priority: Int = LogPriority.high, _ message: String) async {
         guard enabled else { return }
         for log in logs {
-            Task.detached {
+            await log.warning(priority: priority, message)
+        }
+    }
+    
+    public func warningBlocking(priority: Int = LogPriority.high, _ message: String) {
+        guard enabled else { return }
+        runBlocking {
+            for log in logs {
                 await log.warning(priority: priority, message)
             }
         }
     }
     
-    public func info(priority: Int = LogPriority.medium, _ message: String) {
+    public func warningDetached(priority: Int = LogPriority.high, _ message: String) {
+        guard enabled else { return }
+        Task.detached {
+            for log in logs {
+                await log.warning(priority: priority, message)
+            }
+        }
+    }
+    
+    public func info(priority: Int = LogPriority.medium, _ message: String) async {
         guard enabled else { return }
         for log in logs {
-            Task.detached {
+            await log.info(priority: priority, message)
+        }
+    }
+    
+    public func infoBlocking(priority: Int = LogPriority.medium, _ message: String) {
+        guard enabled else { return }
+        runBlocking {
+            for log in logs {
                 await log.info(priority: priority, message)
             }
         }
     }
     
-    public func debug(priority: Int = LogPriority.low, _ message: String) {
+    public func infoDetached(priority: Int = LogPriority.medium, _ message: String) {
+        guard enabled else { return }
+        Task.detached {
+            for log in logs {
+                await log.info(priority: priority, message)
+            }
+        }
+    }
+    
+    public func debug(priority: Int = LogPriority.low, _ message: String) async {
         guard enabled else { return }
         for log in logs {
-            Task.detached {
+            await log.debug(priority: priority, message)
+        }
+    }
+    
+    public func debugBlocking(priority: Int = LogPriority.low, _ message: String) {
+        guard enabled else { return }
+        runBlocking {
+            for log in logs {
                 await log.debug(priority: priority, message)
             }
         }
     }
     
-    public func trace(priority: Int = LogPriority.lowest, _ message: String) {
+    public func debugDetached(priority: Int = LogPriority.low, _ message: String) {
+        guard enabled else { return }
+        Task.detached {
+            for log in logs {
+                await log.debug(priority: priority, message)
+            }
+        }
+    }
+    
+    public func trace(priority: Int = LogPriority.lowest, _ message: String) async {
         guard enabled else { return }
         for log in logs {
-            Task.detached {
+            await log.trace(priority: priority, message)
+        }
+    }
+    
+    public func traceBlocking(priority: Int = LogPriority.lowest, _ message: String) {
+        guard enabled else { return }
+        runBlocking {
+            for log in logs {
+                await log.trace(priority: priority, message)
+            }
+        }
+    }
+    
+    public func traceDetached(priority: Int = LogPriority.lowest, _ message: String) {
+        guard enabled else { return }
+        Task.detached {
+            for log in logs {
                 await log.trace(priority: priority, message)
             }
         }
