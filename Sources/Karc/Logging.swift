@@ -129,7 +129,7 @@ public extension Log {
     }
 }
 
-public actor DefaultLog: Log {
+public final actor DefaultLog: Log {
     
     public static let shared = DefaultLog(logLevels: LogLevels.all, minPriority: LogPriority.lowest)
     

@@ -11,31 +11,44 @@
 // https://opensource.org/licenses/CDDL-1.0 or LICENSE.txt.
 //
 
+import Foundation
 import Kasync
 
-public enum PipeState: Sendable {
-    case opened(time: ContinuousClock.Instant, flowDuration: ContinuousClock.Duration, initial: Bool)
-    case started(time: ContinuousClock.Instant, flowDuration: ContinuousClock.Duration)
-    case stopped(time: ContinuousClock.Instant, flowDuration: ContinuousClock.Duration, trackDuration: ContinuousClock.Duration, error: Error?)
-    case finished(time: ContinuousClock.Instant, flowDuration: ContinuousClock.Duration, trackDuration: ContinuousClock.Duration)
-    case interrupted(time: ContinuousClock.Instant, flowDuration: ContinuousClock.Duration, error: Error)
-    case broken(time: ContinuousClock.Instant, flowDuration: ContinuousClock.Duration, error: Error)
-    case closed(time: ContinuousClock.Instant, flowDuration: ContinuousClock.Duration, canceled: Bool)
+public enum PipeStatus: Sendable {
+    case started
+    case stopped(error: Error?)
+    case flushed
+    case interrupted(error: Error)
+    case broken(error: Error)
+    case finished(canceled: Bool)
 }
 
-public final class PipeContext: @unchecked Sendable {
+public enum PipeState: String, Sendable {
+    case scheduled = "SCHEDULED", open = "OPEN", closed = "CLOSED"
+}
+
+public struct ConcurrentAttemptToStartPipeTrack: LocalizedError {
+    public var errorDescription: String? { "Concurrent attempt to start track" }
+}
+
+public struct ConcurrentAttemptToStopPipeTrack: LocalizedError {
+    public var errorDescription: String? { "Concurrent attempt to stop track" }
+}
+
+public final actor PipeContext {
     
     public let modelUid: AnyUid
     public let pipelineUid: AnyUid
     public let pipeId: String
-    @AtomicReference(PipeState.closed(time: ContinuousClock.now, flowDuration: ContinuousClock.Duration.zero, canceled: false)) public var internalPipeState
+    private var internalPipeState = PipeState.closed
     private let barrier: Barrier?
-    @AtomicReference(true) private var needAwaitBarrier
+    private var needAwaitBarrier = true
     private let logger: Logger
     private weak var pipeline: Pipeline?
-    @AtomicReference(ContinuousClock.Instant.now) fileprivate var internalFlowInitialTime
+    private var trackStarted: ContinuousClock.Instant? = nil
+    private var stateModified = ContinuousClock.Instant.now
     
-    init(modelUid: AnyUid, pipelineUid: AnyUid, pipeId: String, barrier: Barrier?, logger: Logger, pipeline: Pipeline) {
+    internal init(modelUid: AnyUid, pipelineUid: AnyUid, pipeId: String, barrier: Barrier?, logger: Logger, pipeline: Pipeline) {
         self.modelUid = modelUid
         self.pipelineUid = pipelineUid
         self.pipeId = pipeId
@@ -45,46 +58,56 @@ public final class PipeContext: @unchecked Sendable {
     }
     
     fileprivate func awaitBarrierIfNeeded() async {
-        if await needAwaitBarrier.atomic({ needAwaitBarrier in defer { if needAwaitBarrier { needAwaitBarrier = false } }; return needAwaitBarrier; }) {
+        if needAwaitBarrier {
+            needAwaitBarrier = false
             try? await barrier?.await()
         }
     }
     
     public var pipeState: PipeState {
-        get async {
-            await internalPipeState^
+        get {
+            internalPipeState
         }
     }
     
-    fileprivate func setPipeState(_ pipeState: PipeState) async {
-        await internalPipeState =^ pipeState
-        switch pipeState {
-        case .opened(_, let flowDuration, let initial):
-            logInfo("OPENED flowDuration: \(flowDuration), initial: \(initial)")
-        case .started(_, let flowDuration):
-            logInfo("STARTED flowDuration: \(flowDuration)")
-        case .stopped(_, let flowDuration, let trackDuration, let error):
-            logInfo("STOPPED flowDuration: \(flowDuration), trackDuration: \(trackDuration), error: \(String(describing: error))")
-        case .finished(_, let flowDuration, let trackDuration):
-            logInfo("FINISHED flowDuration: \(flowDuration), trackDuration: \(trackDuration)")
-        case .interrupted(_, let flowDuration, let error):
-            logWarning("INTERRUPTED flowDuration: \(flowDuration), error: \(error)")
-        case .broken(_, let flowDuration, let error):
-            logError("BROKEN flowDuration: \(flowDuration), error: \(error)")
+    fileprivate func setPipeState(_ pipeState: PipeState) {
+        let now = ContinuousClock.Instant.now
+        logTrace("\(pipeState.rawValue) <= \(internalPipeState.rawValue)(stateTime: \(now - stateModified))")
+        internalPipeState = pipeState
+        stateModified = now
+    }
+    
+    @discardableResult
+    fileprivate func applyPipeStatus(_ pipeStatus: PipeStatus) async -> Bool {
+        switch pipeStatus {
+        case .started:
+            guard trackStarted == nil else { logError("Concurrent attempt to start track is forbidden"); return false }
+            let now = ContinuousClock.Instant.now
+            trackStarted = now
+            let stateTime = now - stateModified
+            logTrace("STARTED stateTime: \(stateTime)")
+        case .stopped(let error):
+            guard let trackStarted = trackStarted else { logError("Concurrent attempt to stop track is forbidden"); return false }
+            self.trackStarted = nil
+            let now = ContinuousClock.Instant.now
+            let stateTime = now - stateModified
+            let trackTime = now - trackStarted
+            logTrace("STOPPED stateTime: \(stateTime), trackTime: \(trackTime), error: \(String(describing: error))")
+        case .flushed:
+            let stateTime = ContinuousClock.Instant.now - stateModified
+            logTrace("FLUSHED stateTime: \(stateTime)")
+        case .interrupted(let error):
+            let stateTime = ContinuousClock.Instant.now - stateModified
+            logWarning("INTERRUPTED stateTime: \(stateTime), error: \(error)")
+        case .broken(let error):
+            let stateTime = ContinuousClock.Instant.now - stateModified
+            logError("BROKEN stateTime: \(stateTime), error: \(error)")
             await pipeline?.relaunch()
-        case .closed(_, let flowDuration, let canceled):
-            logInfo("CLOSED flowDuration: \(flowDuration), canceled: \(canceled)")
+        case .finished(let canceled):
+            let stateTime = ContinuousClock.Instant.now - stateModified
+            logTrace("FINISHED stateTime: \(stateTime), canceled: \(canceled)")
         }
-    }
-    
-    public var flowInitialTime: ContinuousClock.Instant {
-        get async {
-            await internalFlowInitialTime^
-        }
-    }
-    
-    fileprivate func setFlowInitialTime(_ flowInitialTime: ContinuousClock.Instant) async {
-        await internalFlowInitialTime =^ flowInitialTime
+        return true
     }
     
     nonisolated public func logError(priority: Int = LogPriority.highest, _ message: String) {
@@ -130,7 +153,7 @@ public struct Pipe: Sendable {
     public enum Mode<SI, SO, TI, TO, DI, DO> {
         case simplex(
             instantOutput: SO? = nil,
-            intro: ((AsyncThrowingStream<SI, Error>) -> AsyncThrowingStream<TI, Error>)? = nil,
+            intro: ((AsyncThrowingStream<TI, Error>) -> AsyncThrowingStream<TI, Error>)? = nil,
             outro: (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> = { (seq: AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> in
                 seq.compactMap { $0 as? DI }*!
             }
@@ -143,7 +166,7 @@ public struct Pipe: Sendable {
     }
     
     public enum Policy {
-        case finite(count: Int), infinite
+        case finite(delay: Duration? = nil, count: Int), infinite(delay: Duration? = nil)
     }
     
     let id: String
@@ -184,52 +207,38 @@ public struct Pipe: Sendable {
             let flowFactory: () -> AsyncThrowingStream<Any, Error> = {
                 switch mode {
                 case .simplex(let instantOutput, let intro, let outro):
-                    let seq: AsyncThrowingStream<TO, Error> = {
-                        if let intro = intro {
-                            return intro(source.receiver(instantOutput: instantOutput ?? () as! SO)).map({ try await refinedTrack($0, context) })*!
-                        } else {
-                            switch refinedTrack {
-                            case let refinedTrack as PipeTrack<SI, TO>:
-                                return source.receiver(instantOutput: instantOutput ?? () as! SO).map({ try await refinedTrack($0, context) })*!
-                            default:
-                                return source.receiver(instantOutput: instantOutput ?? () as! SO).map({ try await refinedTrack($0, context) })*!
-                            }
+                    let seq1: AsyncThrowingStream<TI, Error> = { () -> AsyncThrowingStream<TI, Error> in
+                        switch refinedTrack {
+                        case is PipeTrack<SI, TO>:
+                            return (source.receiver(instantOutput: instantOutput ?? () as! SO) as AsyncThrowingStream<SI, Error>) as! AsyncThrowingStream<TI, Error>
+                        default:
+                            return source.receiver(instantOutput: instantOutput ?? () as! SO)
                         }
                     }()
-                    if let drain = drain {
-                        return drain.sender(
-                            provider: {
-                                switch (seq) {
-                                case let seq as AsyncThrowingStream<DI, Error>:
-                                    return seq
-                                default:
-                                    return outro(seq)
-                                }
-                            }()
-                        ).map { $0 as Any }*!
+                    let seq2: AsyncThrowingStream<TI, Error> = {
+                        if let intro {
+                            return intro(seq1)
+                        } else {
+                            return seq1
+                        }
+                    }()
+                    let seq3: AsyncThrowingStream<TO, Error> = seq2.map({ try await refinedTrack($0, context) })*!
+                    if let drain {
+                        return drain.sender(provider: outro(seq3)).map { $0 as Any }*!
                     } else {
-                        return seq.map { $0 as Any }*!
+                        return seq3.map { $0 as Any }*!
                     }
                 case .duplex(let outro):
                     let seq: AsyncThrowingStream<TO, Error> = {
                         switch refinedTrack {
                         case let refinedTrack as PipeTrack<SI, TO>:
-                            return source.processor(operation: { ti in try await refinedTrack(ti, context) as! SO }).map { $0 as! TO }*!
+                            return source.processor(operation: { ti in try await refinedTrack(ti, context) as! SO}).map { $0 as! TO }*!
                         default:
-                            return source.processor(operation: { ti in try await refinedTrack(ti, context) as! SO }).map { $0 as! TO }*!
+                            return source.processor(operation: { ti in try await refinedTrack(ti, context) as! SO}).map { $0 as! TO }*!
                         }
                     }()
-                    if let drain = drain {
-                        return drain.sender(
-                            provider: {
-                                switch (seq) {
-                                case let seq as AsyncThrowingStream<DI, Error>:
-                                    return seq
-                                default:
-                                    return outro(seq)
-                                }
-                            }()
-                        ).map { $0 as Any }*!
+                    if let drain {
+                        return drain.sender(provider: outro(seq)).map { $0 as Any }*!
                     } else {
                         return seq.map { $0 as Any }*!
                     }
@@ -254,10 +263,10 @@ public struct Pipe: Sendable {
             let refinedTrack = Pipe.buildRefinedTrack(track: track)
             let flowFactory: () -> AsyncThrowingStream<Any, Error> = {
                 switch policy {
-                case .finite(let count):
-                    return iterate(count: count).map({ try await refinedTrack($0, context) })*!
-                case .infinite:
-                    return iterateInfinitely().map({ try await refinedTrack($0, context) })*!
+                case .finite(let delay, let count):
+                    return iterate(delay: delay, count: count).map({ try await refinedTrack($0, context) })*!
+                case .infinite(let delay):
+                    return iterateInfinitely(delay: delay).map({ try await refinedTrack($0, context) })*!
                 }
             }
             await Pipe.execute(
@@ -268,93 +277,66 @@ public struct Pipe: Sendable {
         }
     }
     
-    private static func buildRefinedTrack<I, O>(
-        track: @escaping PipeTrack<I, O>
-    ) -> PipeTrack<I, O> {
+    private static func buildRefinedTrack<I, O>(track: @escaping PipeTrack<I, O>) -> PipeTrack<I, O> {
         return { i, context in
-            let trackInitialTime = ContinuousClock.now
-            do {
-                await context.setPipeState(.started(time: trackInitialTime, flowDuration: trackInitialTime - context.flowInitialTime))
-                let o = try await track(i, context)
-                let currentTime = ContinuousClock.now
-                await context.setPipeState(.finished(
-                    time: currentTime,
-                    flowDuration: currentTime - context.flowInitialTime,
-                    trackDuration: currentTime - trackInitialTime
-                ))
+            let startedSuccessfully = await context.applyPipeStatus(.started)
+            if !startedSuccessfully {
+                throw ConcurrentAttemptToStartPipeTrack()
+            }
+            let trackResult: Result<O, Error> = await {
+                do {
+                    return Result.success(try await track(i, context))
+                } catch {
+                    return Result.failure(error)
+                }
+            }()
+            let trackError: Error? = {
+                switch trackResult {
+                case .success(_):
+                    return nil
+                case .failure(let error):
+                    return error
+                }
+            }()
+            let stoppedSuccessfully = await context.applyPipeStatus(.stopped(error: trackError))
+            if !stoppedSuccessfully {
+                throw ConcurrentAttemptToStopPipeTrack()
+            }
+            switch trackResult {
+            case .success(let o):
                 return o
-            } catch {
-                let currentTime = ContinuousClock.now
-                await context.setPipeState(.stopped(
-                    time: currentTime,
-                    flowDuration: currentTime - context.flowInitialTime,
-                    trackDuration: currentTime - trackInitialTime,
-                    error: error is CancellationError ? nil : error
-                ))
+            case .failure(let error):
                 throw error
             }
         }
     }
     
-    private static func execute(
-        context: PipeContext,
-        flowFactory: () -> AsyncThrowingStream<Any, Error>,
-        recoverFromError: Bool
-    ) async {
+    private static func execute(context: PipeContext, flowFactory: () -> AsyncThrowingStream<Any, Error>, recoverFromError: Bool) async {
         while true {
+            await context.setPipeState(.scheduled)
             var flowError: Error? = nil
             let flow = flowFactory()*~
             await context.awaitBarrierIfNeeded()
-            let flowInitialTime = ContinuousClock.now
-            await context.setFlowInitialTime(flowInitialTime)
+            await context.setPipeState(.open)
             do {
-                await context.setPipeState(.opened(time: flowInitialTime, flowDuration: ContinuousClock.Duration.zero, initial: true))
                 for try await _ in flow {
-                    if !flow.terminated {
-                        let currentTime = ContinuousClock.now
-                        await context.setPipeState(.opened(time: currentTime, flowDuration: currentTime - flowInitialTime, initial: false))
-                    }
+                    await context.applyPipeStatus(.flushed)
                 }
             } catch {
                 if !Task.isCancelled && !(error is CancellationError) && recoverFromError {
-                    let currentTime = ContinuousClock.now
-                    await context.setPipeState(
-                        .interrupted(
-                            time: currentTime,
-                            flowDuration: currentTime - flowInitialTime,
-                            error: error
-                        )
-                    )
+                    await context.applyPipeStatus(.interrupted(error: error))
                     continue
                 }
                 flowError = error
             }
-            let currentTime = ContinuousClock.now
             if Task.isCancelled || flowError is CancellationError {
-                await context.setPipeState(
-                    .closed(
-                        time: currentTime,
-                        flowDuration: currentTime - flowInitialTime,
-                        canceled: true
-                    )
-                )
-            } else if let flowError = flowError {
-                await context.setPipeState(
-                    .broken(
-                        time: currentTime,
-                        flowDuration: currentTime - flowInitialTime,
-                        error: flowError
-                    )
-                )
+                await context.applyPipeStatus(.finished(canceled: true))
+            } else if let flowError {
+                await context.applyPipeStatus(.broken(error: flowError))
             } else {
-                await context.setPipeState(
-                    .closed(
-                        time: currentTime,
-                        flowDuration: currentTime - flowInitialTime,
-                        canceled: false
-                    )
-                )
+                await context.applyPipeStatus(.finished(canceled: false))
             }
+            await context.setPipeState(.closed)
             break
         }
     }

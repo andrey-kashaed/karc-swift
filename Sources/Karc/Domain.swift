@@ -40,7 +40,7 @@ open class Domain<Id: Equatable & Hashable & Sendable, State: Equatable & Sendab
         seal()
     }
     
-    open func observe(state: State) {}
+    open func observe(state: State) async {}
     
     public final var state: State {
         get async {

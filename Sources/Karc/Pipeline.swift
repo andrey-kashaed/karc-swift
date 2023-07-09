@@ -69,7 +69,7 @@ public final class Pipeline: Scope, @unchecked Sendable {
             contexts[pipeId]!
         }
         await task =^ Task<Void, Never>.detached { [weak self] in
-            if let beginPipe = beginPipe {
+            if let beginPipe {
                 let context = getContext(pipeId: beginPipe.id)
                 await beginPipe.run(context)
             }
@@ -82,7 +82,7 @@ public final class Pipeline: Scope, @unchecked Sendable {
                 }
                 await taskGroup.waitForAll()
             }
-            if let endPipe = endPipe {
+            if let endPipe {
                 let context = getContext(pipeId: endPipe.id)
                 await endPipe.run(context)
             }
