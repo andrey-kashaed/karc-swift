@@ -2,7 +2,7 @@
 
 ***Karc*** is a library simplifying architectural program design in Swift.
 
-[![Latest Release](https://img.shields.io/badge/Latest%20Release-0.1.0-green)](https://github.com/andrey-kashaed/karc-swift/releases/tag/0.1.0)
+[![Latest Release](https://img.shields.io/badge/Latest%20Release-0.1.1-green)](https://github.com/andrey-kashaed/karc-swift/releases/tag/0.1.1)
 [![Swift](https://img.shields.io/badge/Swift-5.8-yellow)](https://www.swift.org/blog/swift-5.8-released)
 ![Platforms](https://img.shields.io/badge/Platforms-macOS%2013.0%2B%20%7C%20iOS%2016.0%2B%20%7C%20tvOS%2016.0%2B%20%7C%20watchOS%209.0%2B-red)
 [![License](https://img.shields.io/badge/License-CDDL--1.0-blue)](https://opensource.org/licenses/CDDL-1.0)
