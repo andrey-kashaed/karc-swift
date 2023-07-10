@@ -33,11 +33,11 @@ public final class Pipeline: Scope, @unchecked Sendable {
         self.uid = Uid(tag: tag.components(separatedBy: "(").getOrNil(0) ?? tag, id: id).asAny
         self.beginPipeFactory = {
             guard let track = begin else { return nil }
-            return Pipe(id: "begin", policy: .finite(count: 1), track: track)
+            return Pipe.finite(id: "begin", count: 1, track: track)
         }
         self.endPipeFactory = {
             guard let track = end else { return nil }
-            return Pipe(id: "end", policy: .finite(count: 1), track: track)
+            return Pipe.finite(id: "end", count: 1, track: track)
         }
         self.pipesFactory = pipes
     }

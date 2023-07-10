@@ -150,85 +150,149 @@ public func % <I, O>(
 
 public struct Pipe: Sendable {
     
-    public enum Mode<SI, SO, TI, TO, DI, DO> {
+    private enum Mode<SI, SO, II, TI, TO, DI, DO> {
         case simplex(
-            instantOutput: SO? = nil,
-            intro: ((AsyncThrowingStream<TI, Error>) -> AsyncThrowingStream<TI, Error>)? = nil,
-            outro: (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> = { (seq: AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> in
-                seq.compactMap { $0 as? DI }*!
-            }
+            source: any Source<SI, SO>,
+            drain: (any Drain<DI, DO>)?,
+            instantOutput: SO,
+            intro: (AsyncThrowingStream<II, Error>) -> AsyncThrowingStream<TI, Error>,
+            outro: (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error>
         )
         case duplex(
-            outro: (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> = { (seq: AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> in
-                seq.compactMap { $0 as? DI }*!
-            }
+            source: any Source<SI, SO>,
+            drain: (any Drain<DI, DO>)?,
+            outro: (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error>
         )
-    }
-    
-    public enum Policy {
-        case finite(delay: Duration? = nil, count: Int), infinite(delay: Duration? = nil)
+        case finite(delay: Duration?, count: Int)
+        case infinite(delay: Duration?)
     }
     
     let id: String
     let runnable: @Sendable (PipeContext) async -> Void
     
-    public init<SI, SO, TI, TO>(
+    public static func simplex<SI, SO, II, TI, TO, DI, DO>(
         id: String,
         recoverFromError: Bool = true,
-        mode: Mode<SI, SO, TI, TO, Any, Void>,
         source: any Source<SI, SO>,
+        drain: (any Drain<DI, DO>)? = nil as (any Drain<Any, Void>)?,
+        instantOutput: SO,
+        intro: @escaping (AsyncThrowingStream<II, Error>) -> AsyncThrowingStream<TI, Error>,
+        outro: @escaping (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> = { (seq: AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> in
+            switch seq {
+            case let seq as AsyncThrowingStream<DI, Error>:
+                return seq
+            default:
+                return seq.compactMap { $0 as? DI }*!
+            }
+        },
         track: @escaping PipeTrack<TI, TO>
-    ) {
-        self.init(id: id, recoverFromError: recoverFromError, mode: mode, source: source, drain: nil, track: track)
+    ) -> Pipe {
+        let mode: Mode<SI, SO, II, TI, TO, DI, DO> = .simplex(
+            source: source,
+            drain: drain,
+            instantOutput: instantOutput,
+            intro: intro,
+            outro: outro
+        )
+        return Pipe(id: id, recoverFromError: recoverFromError, mode: mode, track: track)
     }
     
-    public init<SI, SO, TI, TO, DI, DO>(
+    public static func simplex<SI, SO, TI, TO, DI, DO>(
         id: String,
         recoverFromError: Bool = true,
-        mode: Mode<SI, SO, TI, TO, DI, DO>,
         source: any Source<SI, SO>,
-        drain: any Drain<DI, DO>,
+        drain: (any Drain<DI, DO>)? = nil as (any Drain<Any, Void>)?,
+        instantOutput: SO,
+        outro: @escaping (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> = { (seq: AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> in
+            switch seq {
+            case let seq as AsyncThrowingStream<DI, Error>:
+                return seq
+            default:
+                return seq.compactMap { $0 as? DI }*!
+            }
+        },
         track: @escaping PipeTrack<TI, TO>
-    ) {
-        self.init(id: id, recoverFromError: recoverFromError, mode: mode, source: source, drain: drain as (any Drain<DI, DO>)?, track: track)
+    ) -> Pipe {
+        let mode: Mode<SI, SO, TI, TI, TO, DI, DO> = .simplex(
+            source: source,
+            drain: drain,
+            instantOutput: instantOutput,
+            intro: { $0 },
+            outro: outro
+        )
+        return Pipe(id: id, recoverFromError: recoverFromError, mode: mode, track: track)
     }
     
-    private init<SI, SO, TI, TO, DI, DO>(
+    public static func duplex<SI, SO, TI, TO, DI, DO>(
+        id: String,
+        recoverFromError: Bool = true,
+        source: any Source<SI, SO>,
+        drain: (any Drain<DI, DO>)? = nil as (any Drain<Any, Void>)?,
+        outro: @escaping (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> = { (seq: AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> in
+            switch seq {
+            case let seq as AsyncThrowingStream<DI, Error>:
+                return seq
+            default:
+                return seq.compactMap { $0 as? DI }*!
+            }
+        },
+        track: @escaping PipeTrack<TI, TO>
+    ) -> Pipe {
+        let mode: Mode<SI, SO, TI, TI, TO, DI, DO> = .duplex(
+            source: source,
+            drain: drain,
+            outro: outro
+        )
+        return Pipe(id: id, recoverFromError: recoverFromError, mode: mode, track: track)
+    }
+    
+    public static func finite(
+        id: String,
+        recoverFromError: Bool = true,
+        delay: Duration? = nil,
+        count: Int,
+        track: @escaping PipeTrack<Void, Void>
+    ) -> Pipe {
+        let mode: Mode<Never, Never, Never, Void, Void, Never, Never> = .finite(delay: delay, count: count)
+        return Pipe(id: id, recoverFromError: recoverFromError, mode: mode, track: track)
+    }
+    
+    public static func infinite(
+        id: String,
+        recoverFromError: Bool = true,
+        delay: Duration? = nil,
+        track: @escaping PipeTrack<Void, Void>
+    ) -> Pipe {
+        let mode: Mode<Never, Never, Never, Void, Void, Never, Never> = .infinite(delay: delay)
+        return Pipe(id: id, recoverFromError: recoverFromError, mode: mode, track: track)
+    }
+    
+    private init<SI, SO, II, TI, TO, DI, DO>(
         id: String,
         recoverFromError: Bool,
-        mode: Mode<SI, SO, TI, TO, DI, DO>,
-        source: any Source<SI, SO>,
-        drain: (any Drain<DI, DO>)?,
+        mode: Mode<SI, SO, II, TI, TO, DI, DO>,
         track: @escaping PipeTrack<TI, TO>
     ) {
         self.id = id
-        self.runnable = { (context: PipeContext) in
+        self.runnable = { (context: PipeContext) async -> Void in
             let refinedTrack = Pipe.buildRefinedTrack(track: track)
-            let flowFactory: () -> AsyncThrowingStream<Any, Error> = {
+            let flowFactory: () -> AsyncThrowingStream<Any, Error> = { () -> AsyncThrowingStream<Any, Error> in
                 switch mode {
-                case .simplex(let instantOutput, let intro, let outro):
-                    let seq1: AsyncThrowingStream<TI, Error> = { () -> AsyncThrowingStream<TI, Error> in
-                        switch refinedTrack {
-                        case is PipeTrack<SI, TO>:
-                            return (source.receiver(instantOutput: instantOutput ?? () as! SO) as AsyncThrowingStream<SI, Error>) as! AsyncThrowingStream<TI, Error>
+                case .simplex(let source, let drain, let instantOutput, let intro, let outro):
+                    let seq: AsyncThrowingStream<TO, Error> = { () -> AsyncThrowingStream<TI, Error> in
+                        switch intro {
+                        case let intro as (AsyncThrowingStream<SI, Error>) -> AsyncThrowingStream<TI, Error>:
+                            return intro(source.receiver(instantOutput: instantOutput))
                         default:
-                            return source.receiver(instantOutput: instantOutput ?? () as! SO)
+                            return intro(source.receiver(instantOutput: instantOutput))
                         }
-                    }()
-                    let seq2: AsyncThrowingStream<TI, Error> = {
-                        if let intro {
-                            return intro(seq1)
-                        } else {
-                            return seq1
-                        }
-                    }()
-                    let seq3: AsyncThrowingStream<TO, Error> = seq2.map({ try await refinedTrack($0, context) })*!
+                    }().map({ try await refinedTrack($0, context) })*!
                     if let drain {
-                        return drain.sender(provider: outro(seq3)).map { $0 as Any }*!
+                        return drain.sender(provider: outro(seq)).map { $0 as Any }*!
                     } else {
-                        return seq3.map { $0 as Any }*!
+                        return seq.map { $0 as Any }*!
                     }
-                case .duplex(let outro):
+                case .duplex(let source, let drain, let outro):
                     let seq: AsyncThrowingStream<TO, Error> = {
                         switch refinedTrack {
                         case let refinedTrack as PipeTrack<SI, TO>:
@@ -242,31 +306,10 @@ public struct Pipe: Sendable {
                     } else {
                         return seq.map { $0 as Any }*!
                     }
-                }
-            }
-            await Pipe.execute(
-                context: context,
-                flowFactory: flowFactory,
-                recoverFromError: recoverFromError
-            )
-        }
-    }
-    
-    public init(
-        id: String,
-        recoverFromError: Bool = true,
-        policy: Policy,
-        track: @escaping PipeTrack<Void, Void>
-    ) {
-        self.id = id
-        self.runnable = { (context: PipeContext) in
-            let refinedTrack = Pipe.buildRefinedTrack(track: track)
-            let flowFactory: () -> AsyncThrowingStream<Any, Error> = {
-                switch policy {
                 case .finite(let delay, let count):
-                    return iterate(delay: delay, count: count).map({ try await refinedTrack($0, context) })*!
+                    return iterate(delay: delay, count: count).map({ try await refinedTrack($0 as! TI, context) })*!
                 case .infinite(let delay):
-                    return iterateInfinitely(delay: delay).map({ try await refinedTrack($0, context) })*!
+                    return iterateInfinitely(delay: delay).map({ try await refinedTrack($0 as! TI, context) })*!
                 }
             }
             await Pipe.execute(
