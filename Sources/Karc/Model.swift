@@ -67,6 +67,10 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
         true
     }
     
+    open var parallelizedScoping: Bool {
+        false
+    }
+    
     open func logs(environ: Environ) async -> [Log] {
         [DefaultLog.shared]
     }
@@ -145,9 +149,7 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
                     break
                 }
             }
-            await scopes.forEachAsync { scope in
-                await scope.deactivate(environ: self.environ, logger: self.logger, modelUid: self.uid)
-            }
+            await self.deactivateScopes(scopes: scopes, environ: self.environ)
             await self.logger.trace("[\(self.uid)] Task is terminated")
         }
         await didSetUp()
@@ -190,15 +192,49 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
         var newScopes = self.scopes(state, interactor)
         let p = scopes.partition(by: { scope in !newScopes.contains(where: { $0.uid == scope.uid }) })
         let oldScopes = scopes[p...]
-        await oldScopes.forEachAsync {
-            await $0.deactivate(environ: environ, logger: logger, modelUid: uid)
-        }
+        await deactivateScopes(scopes: oldScopes, environ: environ)
         scopes.removeLast(oldScopes.count)
         newScopes.removeAll { scope in scopes.contains(where: { $0.uid == scope.uid }) }
-        await newScopes.forEachAsync { scope in
-            await scope.activate(environ: environ, logger: logger, modelUid: uid)
-        }
+        await activateScopes(scopes: newScopes, environ: environ)
         scopes.append(contentsOf: newScopes)
+    }
+    
+    private func activateScopes(scopes: some Collection<Scope>, environ: Environ) async {
+        let modelUid = uid
+        let logger = logger
+        if parallelizedScoping {
+            await withTaskGroup(of: Void.self) { taskGroup in
+                scopes.forEach { scope in
+                    let _ = taskGroup.addTaskUnlessCancelled {
+                        await scope.activate(environ: environ, logger: logger, modelUid: modelUid)
+                    }
+                }
+                await taskGroup.waitForAll()
+            }
+        } else {
+            await scopes.forEachAsync { scope in
+                await scope.activate(environ: environ, logger: logger, modelUid: modelUid)
+            }
+        }
+    }
+    
+    private func deactivateScopes(scopes: some Collection<Scope>, environ: Environ) async {
+        let modelUid = uid
+        let logger = logger
+        if parallelizedScoping {
+            await withTaskGroup(of: Void.self) { taskGroup in
+                scopes.forEach { scope in
+                    let _ = taskGroup.addTaskUnlessCancelled {
+                        await scope.deactivate(environ: environ, logger: logger, modelUid: modelUid)
+                    }
+                }
+                await taskGroup.waitForAll()
+            }
+        } else {
+            await scopes.forEachAsync {
+                await $0.deactivate(environ: environ, logger: logger, modelUid: modelUid)
+            }
+        }
     }
 
 }
