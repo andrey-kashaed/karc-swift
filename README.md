@@ -2,7 +2,7 @@
 
 ***Karc*** is a library simplifying architectural program design in Swift.
 
-[![Latest Release](https://img.shields.io/badge/Latest%20Release-0.1.1-green)](https://github.com/andrey-kashaed/karc-swift/releases/tag/0.1.1)
+[![Latest Release](https://img.shields.io/badge/Latest%20Release-0.2.0-green)](https://github.com/andrey-kashaed/karc-swift/releases/tag/0.2.0)
 [![Swift](https://img.shields.io/badge/Swift-5.8-yellow)](https://www.swift.org/blog/swift-5.8-released)
 ![Platforms](https://img.shields.io/badge/Platforms-macOS%2013.0%2B%20%7C%20iOS%2016.0%2B%20%7C%20tvOS%2016.0%2B%20%7C%20watchOS%209.0%2B-red)
 [![License](https://img.shields.io/badge/License-CDDL--1.0-blue)](https://opensource.org/licenses/CDDL-1.0)
@@ -181,9 +181,8 @@ fileprivate extension TestModel.Interactor {
                     ontext.logInfo("No stored account")
                 }
             }
-            Pipe(
+            Pipe.duplex(
                 id: "register-account",
-                mode: .duplex(),
                 source: commandSource
             ) { (command: RegisterAccount, context: PipeContext) -> Result<Account, Error> in
                 if await state.account != nil {
@@ -201,10 +200,10 @@ fileprivate extension TestModel.Interactor {
                     return .failure(AccountAlreadyRegisteredError())
                 }
             }
-            Pipe(
+            Pipe.simplex(
                 id: "unregister-account",
-                mode: .simplex(),
-                source: commandSource
+                source: commandSource,
+                instantOutput: ()
             ) { (command: UnregisterAccount, context: PipeContext) in
                 guard let account = await state.account else {
                     throw RuntimeError("Account is already unregistered!") 
@@ -214,10 +213,18 @@ fileprivate extension TestModel.Interactor {
                 try await web.unregister(account: account)
                 context.logInfo("Account is unregistered")
             }
-            Pipe(id: "updated-account", mode: .simplex(), source: eventSource) { (event: UpdatedAccount, context: PipeContext) in
+            Pipe.simplex(
+                id: "updated-account", 
+                source: eventSource, 
+                instantOutput: ()
+            ) { (event: UpdatedAccount, context: PipeContext) in
                 context.logInfo("Account is updated")
             }
-            Pipe(id: "deleted-account", mode: .simplex(), source: eventSource) { (event: DeletedAccount, context: PipeContext) in
+            Pipe.simplex(
+                id: "deleted-account", 
+                source: eventSource, 
+                instantOutput: ()
+            ) { (event: DeletedAccount, context: PipeContext) in
                 context.logInfo("Account is deleted")
             }
         }
@@ -225,7 +232,7 @@ fileprivate extension TestModel.Interactor {
     
 }
 ```
-As we can see from code above, we used `@Inject` and `@Use` property wrappers in order to resolve our dependencies, see [important details](#note_inject) about `@Inject` property wrapper and [important details](#note_use) about `@Use` property wrapper. We defined `bootstrap` *pipe* which will be executed only once because we specified `policy: .finite(count: 1)`. Since we defined `main` factory method as a part of [`Interactor`](#interactor)'s extension, we have access to properties like `state`, `commandSource`, `commandDrain`, `effectDrain`, `eventSource`. We can use aforementioned *sources* and *drains* as `source` and `drain` parameters for *pipes*. We specified `mode: .duplex()` for `register-account` *pipe*. This means that call like `TestDomain.get.send(RegisterAccount(userEmail: <EMAIL>, userPassword: <PASSWORD>))` will return right after *pipe*'s *track* finishes its execution. We specified `mode: .simplex()` for `unregister-account` *pipe*. This means that call like `TestDomain.get.send(UnregisterAccount())` will return right before *pipe*'s *track* starts its execution. After we send `.updatingAccount` *effect* to `effectDrain` and [`Model`](#model)'s `reducer` changes *state* value returning `UpdatedAccount` *event* we will receive this event in `updated-account` *pipe*, so we can handle this event. The same way we can receive and handle `DeletedAccount` *event* in `deleted-account` *pipe*.
+As we can see from code above, we used `@Inject` and `@Use` property wrappers in order to resolve our dependencies, see [important details](#note_inject) about `@Inject` property wrapper and [important details](#note_use) about `@Use` property wrapper. We defined `bootstrap` *pipe* which will be executed only once because we specified `policy: .finite(count: 1)`. Since we defined `main` factory method as a part of [`Interactor`](#interactor)'s extension, we have access to properties like `state`, `commandSource`, `commandDrain`, `effectDrain`, `eventSource`. We can use aforementioned *sources* and *drains* as `source` and `drain` parameters for *pipes*. We specified *duplex mode* for `register-account` *pipe*. This means that call like `TestDomain.get.send(RegisterAccount(userEmail: <EMAIL>, userPassword: <PASSWORD>))` will return right after *pipe*'s *track* finishes its execution. We specified *simplex mode* for `unregister-account` *pipe*. This means that call like `TestDomain.get.send(UnregisterAccount())` will return right before *pipe*'s *track* starts its execution. After we send `.updatingAccount` *effect* to `effectDrain` and [`Model`](#model)'s `reducer` changes *state* value returning `UpdatedAccount` *event* we will receive this event in `updated-account` *pipe*, so we can handle this event. The same way we can receive and handle `DeletedAccount` *event* in `deleted-account` *pipe*.
 
 ```swift
 fileprivate extension TestModel.Interactor {
@@ -244,9 +251,8 @@ fileprivate extension TestModel.Interactor {
             }
         ) {
             for i in 1...6 {
-                Pipe(
+                Pipe.duplex(
                     id: "dispatch-outgoing-message-\(i)",
-                    mode: .duplex(),
                     source: commandSource,
                     drain: outgoingMessageGate
                 ) { (command: DispatchOutgoingMessage, context: PipeContext) -> EncryptedMessage in
@@ -255,22 +261,21 @@ fileprivate extension TestModel.Interactor {
                     return encryptedMessage
                 }
             }
-            Pipe(
+            Pipe.simplex(
                 id: "accept-incoming-message",
-                mode: .simplex(),
-                source: incomingMessageGate
+                source: incomingMessageGate,
+                instantOutput: ()
             ) { (encryptedMessage: EncryptedMessage, context: PipeContext) async throws -> Void in
                 let decryptedMessage = try decryptMessage(encryptedMessage)
                 // handle decrypted incoming message
             }
-            Pipe(
+            Pipe.simplex(
                 id: "swap-encrypted-messages",
-                mode: .simplex(
-                    intro: { $0.collect(interval: .seconds(10)) },
-                    outro: { $0.flatMap { iterate(elements: $0) }*! }
-                ),
                 source: outgoingMessageGate,
-                drain: incomingMessageGate
+                drain: incomingMessageGate,
+                instantOutput: (),
+                intro: { $0.collect(interval: .seconds(10)) },
+                outro: { $0.flatMap { iterate(elements: $0) }*! }
             ) { outgoingMessages, context in
                 guard let account = await state.account else {
                     throw RuntimeError("Account is not registered!")
@@ -292,7 +297,7 @@ fileprivate extension TestModel.Interactor {
 }
 ```
 
-We defined two `Gate`s: `incomingMessageGate` and `outgoingMessageGate`. We are going to use them for communication between independent *pipes*. For `Gate` usage details see [***Kasync*** documentation](https://github.com/andrey-kashaed/kasync-swift/blob/main/README.md). [`Pipeline`](#pipeline) initializer uses [`@resultBuilder`](https://docs.swift.org/swift-book/LanguageGuide/AdvancedOperators.html#ID630) for [`Pipe`](#pipe)'s creation, so we can utilize its functionality and use *for* cycle to specify a certain amount of *pipes* with the same description. We defined six *pipes* consuming `DispatchOutgoingMessage`, which means that we can process six *commands* at the same time. So if we are going to execute seven calls like this `TestDomain.get.send(DispatchOutgoingMessage(message: ...))` only six of them will proceed execution while the seventh will throw error. By means of this technique we can specify *capacity* for certain *command* type. We use `incomingMessageGate` as *source* for `accept-incoming-message` *pipe* and as *drain* for `swap-encrypted-messages` *pipe*. Also we use `outgoingMessageGate` as *source* for `swap-encrypted-messages` *pipe* and as *drain* for `dispatch-outgoing-message-\(i)` *pipes*. For `swap-encrypted-messages` *pipe*'s `mode` parameter we specified `intro` and `outro` in order to transform *source* input to *track* input and to transform *track* output to *drain* input respectively.
+We defined two `Gate`s: `incomingMessageGate` and `outgoingMessageGate`. We are going to use them for communication between independent *pipes*. For `Gate` usage details see [***Kasync*** documentation](https://github.com/andrey-kashaed/kasync-swift/blob/main/README.md). [`Pipeline`](#pipeline) initializer uses [`@resultBuilder`](https://docs.swift.org/swift-book/LanguageGuide/AdvancedOperators.html#ID630) for [`Pipe`](#pipe)'s creation, so we can utilize its functionality and use *for* cycle to specify a certain amount of *pipes* with the same description. We defined six *pipes* consuming `DispatchOutgoingMessage`, which means that we can process six *commands* at the same time. So if we are going to execute seven calls like this `TestDomain.get.send(DispatchOutgoingMessage(message: ...))` only six of them will proceed execution while the seventh will throw error. By means of this technique we can specify *capacity* for certain *command* type. We use `incomingMessageGate` as *source* for `accept-incoming-message` *pipe* and as *drain* for `swap-encrypted-messages` *pipe*. Also we use `outgoingMessageGate` as *source* for `swap-encrypted-messages` *pipe* and as *drain* for `dispatch-outgoing-message-\(i)` *pipes*. For `swap-encrypted-messages` *pipe* we specified `intro` and `outro` in order to transform *source* input to *track* input and to transform *track* output to *drain* input respectively.
 
 #### <a id="step_5"></a> Step 5: Environ definition ####
 
@@ -379,14 +384,14 @@ final class Tests: XCTestCase {
 <a id="model_set_up"></a>
 
 ```swift
-public static func setUp(_ config: Config)
+public static func setUp(_ config: Config) async
 ```
 > Creates `Model` instance (together with corresponding [`Domain`](#domain) instance), adding them to the *internal pool*. Parameter `id` is an optional identifier. Parameter `config` specifies `environ` object, an optional `id` and an optional `state`.
 
 ---
 
 ```swift
-public static func tearDown(id: Id = DefaultId.shared)
+public static func tearDown(id: Id = DefaultId.shared) async
 ```
 > Destroys `Model` instance (together with corresponding [`Domain`](#domain) instance), removing them from the *internal pool*.
 
@@ -444,28 +449,64 @@ open func scopes(state: State, i: Interactor) -> [Scope]
 ---
 
 ```swift
-open func onSetUp()
+open var optimizedScoping: Bool
 ```
-> Callback which is called on `Model` setup. May be overridden by subclass.
+> Defines if *scoping* should be optimized.
+> 
+> **Warning**: if `optimizedScoping` returns `true` value it means that `scopes` method is called only if `reducer` returns at least one *event*. Otherwise `scopes` method is called every time *state* is changed.
+> 
+> Default return value is `true`. May be overridden by subclass.
 
 ---
 
 ```swift
-open func onTearDown()
+open var parallelizedScoping: Bool
 ```
-> Callback which is called on `Model` teardown. May be overridden by subclass.
+> Defines if *scoping* should be parallelized.
+> 
+> **Warning**: if `parallelizedScoping` returns `true` it means that *scope*'s activation and disactivation are performed concurrently. Otherwise activation and disactivation are performed serially.
+> 
+> Default return value is `false`. May be overridden by subclass.
 
 ---
 
 ```swift
-open func willReduce(state: State, effects: [Effect])
+open func willSetUp() async
+```
+> Callback which is called before `Model` setup. May be overridden by subclass.
+
+---
+
+```swift
+open func didSetUp() async
+```
+> Callback which is called after `Model` setup. May be overridden by subclass.
+
+---
+
+```swift
+open func willTearDown() async
+```
+> Callback which is called before `Model` teardown. May be overridden by subclass.
+
+---
+
+```swift
+open func didTearDown() async
+```
+> Callback which is called after `Model` teardown. May be overridden by subclass.
+
+---
+
+```swift
+open func willReduce(state: State, effects: [Effect]) async
 ```
 > Callback which is called before the old `state` and `effects` are reduced. May be overridden by subclass.
 
 ---
 
 ```swift
-open func didReduce(state: State, events: [Event])
+open func didReduce(state: State, events: [Event]) async
 ```
 > Callback which is called after reducer returns the new `state` and `events`. May be overridden by subclass.
 
@@ -535,7 +576,7 @@ public required init(id: Id, state: State)
 <a id="domain_observe"></a>
 
 ```swift
-open func observe(state: State)
+open func observe(state: State) async
 ```
 > Observes `State` changes. Should be overridden by subclass.
 
@@ -726,7 +767,7 @@ public init(
     end: PipeTrack<Void, Void>? = nil,
     @PipeBuilder pipes: @escaping () -> [Pipe])
 ```
-> Creates an instance of `Pipeline`. Parameter `begin` defines block of code which will be executed before all *pipes* defined in `pipesFactory` starts execution. Parameter `end` defines block of code which will be executed after all *pipes* defined in `pipes` stops execution. Parameter `pipes` defines collection of independent [`Pipe`](#pipe) instances.
+> Creates an instance of `Pipeline`. Parameter `begin` defines a closure of `(Void, PipeContext) async throws -> Void` type which will be executed before all *pipes* defined in `pipesFactory` starts execution. Parameter `end` defines a closure of `(Void, PipeContext) async throws -> Void` type which will be executed after all *pipes* defined in `pipes` stops execution. Parameter `pipes` defines collection of independent [`Pipe`](#pipe) instances.
 
 ---
 
@@ -737,111 +778,70 @@ public init(
 ---
 
 ```swift
-public init<SI, SO, TI, TO, DI, DO>(
+public static func simplex<SI, SO, II, TI, TO, DI, DO>(
     id: String,
     recoverFromError: Bool = true,
-    mode: Mode<SI, SO, TI, TO, DI, DO>,
     source: any Source<SI, SO>,
-    drain: any Drain<DI, DO>,
+    drain: (any Drain<DI, DO>)?,
+    instantOutput: SO,
+    intro: @escaping (AsyncThrowingStream<II, Error>) -> AsyncThrowingStream<TI, Error>,
+    outro: @escaping (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error>,
     track: @escaping PipeTrack<TI, TO>
+) -> Pipe
 ```
 
-> Creates an instance of `Pipe`. 
-
-#### Parameters:
-
-##### id
-
-> It is *pipe*'s identifier. 
-
-##### recoverFromError
-
-> Determines if *pipe* is going to be recovered or the whole *pipeline* is going to be restarted in case if *track* defined in `track` throws error. 
-
-##### mode
-
-> It is enum of type `Mode<SI, SO, TI, TO, DI, DO>` defining two modes: `simplex` and `duplex`. It specifies a way of communication between `source` and `PipeTrack` defined in `track`.
-> 
-> ###### simplex mode
-> 
-> This *mode* means that *source* will get `SO` response immediately before *track* starts processing of `TI` input value. 
-> 
+> Creates an instance of `Pipe` in `simplex` *mode*. This *mode* means that *source* will get `SO` response immediately before *track* starts processing of `TI` input value.
+>
 > **Warning**: `TI` must be at least a subtype of `SI` or the same as `SI`.
 > 
-> ---
+> Parameter `id` is *pipe*'s identifier. Parameter `recoverFromError` determines if *pipe* is going to be recovered or the whole *pipeline* is going to be restarted in case if `track` throws error. Parameter `source` produces values incoming to `intro`. Parameter `drain` consumes values outgoing from `outro`. Parameter `instantOutput` specifies value for instant output to the `source`. Parameter `intro` transforms `II` value (received from `source`) into `TI` value which will be processed within `track`. Parameter `outro` transforms `TO` values (returned by `track`) into `DI` value which will be sent to `drain`. Parameter `track` defines a closure of `(I, PipeContext) async throws -> O` type containing side effects and communicating with [`Interactor`](#interactor) of the [`Model`](#model).
 > 
-> ```swift
-> case simplex(
->     instantOutput: SO? = nil,
->     intro: ((AsyncThrowingStream<SI, Error>) -> AsyncThrowingStream<TI, Error>),
->     outro: (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error>)
-> ```
-> > Parameter `instantOutput` specifies value for instant output to the *source*. Parameter `intro` transforms `SI` value (received from *source*) into `TI` value which will be processed within *track*. Parameter `outro` transforms `TO` values (returned by *track*) into `DI` value which will be sent to *drain*.
->
-> ---
-> 
-> ###### duplex mode
-> 
-> This *mode* means that *source* will get `SO` response only after *track* returns `TO` result value.
-> 
-> **Warning**: `TI` must be at least a subtype of `SI` or the same as `SI`.
-> 
-> **Warning**: `TO` must be at least a subtype of `SO` or the same as `SO`.
-> 
-> ---
-> 
-> ```swift
-> case duplex(outro: (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error>)
-> ```
-> > Parameter `outro` transforms `TO` values (returned by *track*) into `DI` value which will be sent to *drain*.
->
-> ---
-> 
-
-##### source
-
-> It is *source* for input values of *track*. 
-
-##### drain
-
-> It is *drain* for output values of *track*. 
-
-##### track
-
-> Parameter `track` defines *track* (which is just a closure of `(I) async throws -> O` type) containing side effects and communicating with [`Interactor`](#interactor) of the [`Model`](#model).
 
 ---
 
 ```swift
-public init(
+public static func duplex<SI, SO, TI, TO, DI, DO>(
     id: String,
     recoverFromError: Bool = true,
-    policy: Policy,
-    @escaping PipeTrack<Void, Void>)
+    source: any Source<SI, SO>,
+    drain: (any Drain<DI, DO>)?,
+    outro: @escaping (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error>,
+    track: @escaping PipeTrack<TI, TO>
+) -> Pipe
 ```
 
-> Creates an instance of `Pipe`.
-
-#### Parameters:
-
-##### id
-
-> It is *pipe*'s identifier. 
-
-##### recoverFromError
-
-> Determines if *pipe* is going to be recovered or the whole *pipeline* is going to be restarted in case if *track* defined in `track` throws error. 
-
-##### policy
-
-> It is enum of type `Policy` defining two policies: `finite` and `infinite`.
+> Creates an instance of `Pipe` in `simplex` *mode*. This *mode* means that *source* will get `SO` response only after *track* returns `TO` result value.
+>
+> **Warning**: `TI` must be at least a subtype of `SI` or the same as `SI`.
 > 
-> ###### finite policy
+> **Warning**: `TO` must be at least a subtype of `SO` or the same as `SO`.
 > 
-> This *policy* means that `track` will be executed finite number of times based on *policy*'s `count` parameter.
+> Parameter `id` is *pipe*'s identifier. Parameter `recoverFromError` determines if *pipe* is going to be recovered or the whole *pipeline* is going to be restarted in case if `track` throws error. Parameter `source` produces values incoming to `track`. Parameter `drain` consumes values outgoing from `outro`. Parameter `outro` transforms `TO` values (returned by `track`) into `DI` value which will be sent to `drain`. Parameter `track` defines a closure of `(I, PipeContext) async throws -> O` type containing side effects and communicating with [`Interactor`](#interactor) of the [`Model`](#model).
 > 
-> ###### infinite policy
-> 
-> This *policy* means that `track` will be executed infinite number of times. Execution cycle will be stopped only when the whole *pipeline* is stopped.
+
+---
+
+```swift
+public static func finite(
+    id: String,
+    recoverFromError: Bool = true,
+    delay: Duration? = nil,
+    count: Int,
+    track: @escaping PipeTrack<Void, Void>
+) -> Pipe
+```
+> Creates an instance of `Pipe` in `finite` *mode*. This *mode* means that `track` will be executed finite number of times based on `count` parameter. Parameter `delay` defines delay between `track` executions.
+
+---
+
+```swift
+public static func infinite(
+    id: String,
+    recoverFromError: Bool = true,
+    delay: Duration? = nil,
+    track: @escaping PipeTrack<Void, Void>
+) -> Pipe
+```
+> Creates an instance of `Pipe` in `infinite` *mode*. This *mode* means that `track` will be executed infinite number of times. Execution cycle will be stopped only when the whole *pipeline* is stopped. Parameter `delay` defines delay between `track` executions.
 
 ---
