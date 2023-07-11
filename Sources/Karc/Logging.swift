@@ -63,7 +63,7 @@ public struct Logger: Sendable {
     
     public func errorDetached(priority: Int = LogPriority.highest, _ message: String) {
         guard enabled else { return }
-        Task.detached {
+        Task.detached(priority: .utility) {
             for log in logs {
                 await log.error(priority: priority, message)
             }
@@ -88,7 +88,7 @@ public struct Logger: Sendable {
     
     public func warningDetached(priority: Int = LogPriority.high, _ message: String) {
         guard enabled else { return }
-        Task.detached {
+        Task.detached(priority: .utility) {
             for log in logs {
                 await log.warning(priority: priority, message)
             }
@@ -113,7 +113,7 @@ public struct Logger: Sendable {
     
     public func infoDetached(priority: Int = LogPriority.medium, _ message: String) {
         guard enabled else { return }
-        Task.detached {
+        Task.detached(priority: .utility) {
             for log in logs {
                 await log.info(priority: priority, message)
             }
@@ -138,7 +138,7 @@ public struct Logger: Sendable {
     
     public func debugDetached(priority: Int = LogPriority.low, _ message: String) {
         guard enabled else { return }
-        Task.detached {
+        Task.detached(priority: .utility) {
             for log in logs {
                 await log.debug(priority: priority, message)
             }
@@ -163,7 +163,7 @@ public struct Logger: Sendable {
     
     public func traceDetached(priority: Int = LogPriority.lowest, _ message: String) {
         guard enabled else { return }
-        Task.detached {
+        Task.detached(priority: .utility) {
             for log in logs {
                 await log.trace(priority: priority, message)
             }

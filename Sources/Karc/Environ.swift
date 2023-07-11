@@ -262,8 +262,7 @@ public struct Use<R, Id: Equatable & Hashable & Sendable>: Sendable {
             let environ = environ
             let id = id
             if acquired {
-                let priority = Task.currentPriority
-                Task.detached(priority: priority) {
+                Task.detached(priority: Task.currentPriority) {
                     try? await environ.release(R.self, id: id)
                 }
             }
@@ -302,8 +301,7 @@ public struct Use<R, Id: Equatable & Hashable & Sendable>: Sendable {
         self.safeguard = safeguard
         self.blockingSafeguard = blockingSafeguard
         if !lazy {
-            let priority = Task.currentPriority
-            Task.detached(priority: priority) {
+            Task.detached(priority: Task.currentPriority) {
                 let _ = try? await safeguard.getResource()
             }
         }
