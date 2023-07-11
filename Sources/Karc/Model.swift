@@ -63,6 +63,10 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
         nil
     }
     
+    open var optimizedScoping: Bool {
+        true
+    }
+    
     open func logs(environ: Environ) async -> [Log] {
         [DefaultLog.shared]
     }
@@ -111,6 +115,7 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
             )
             await self.resolveScopesForState(scopes: &scopes, environ: self.environ, state: self.domain.state, interactor: interactor)
             self.domain.signalAndDisableCommandSemaphore()
+            let optimizedScoping = self.optimizedScoping
             while true {
                 _ = try? await self.effectGate.process { (effects: [Effect]) -> [Event] in
                     let oldState = await self.domain.state
@@ -122,7 +127,9 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
                     if oldState == newState && events.isEmpty { return [] }
                     self.domain.enableCommandSemaphore()
                     await self.domain.setState(state: newState)
-                    await self.resolveScopesForState(scopes: &scopes, environ: self.environ, state: newState, interactor: interactor)
+                    if !optimizedScoping || !events.isEmpty {
+                        await self.resolveScopesForState(scopes: &scopes, environ: self.environ, state: newState, interactor: interactor)
+                    }
                     await self.domain.observeState()
                     self.domain.signalAndDisableCommandSemaphore()
                     await self.didReduce(state: newState, events: events)
