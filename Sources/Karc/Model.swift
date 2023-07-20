@@ -29,6 +29,7 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
     public struct Interactor: Sendable {
         public unowned let environ: Environ
         internal let stateGetter: @Sendable () async -> State
+        internal let stateObserver: @Sendable () async -> Void
         internal let confinedCommandDrain: ConfinedDrain<Command, Any>
         internal let confinedCommandSource: ConfinedSource<Command, Any>
         internal let confinedEffectDrain: ConfinedDrain<[Effect], [Event]>
@@ -37,6 +38,9 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
             get async {
                 await stateGetter()
             }
+        }
+        public func observeState() async {
+            await stateObserver()
         }
         public var commandDrain: some Drain<Command, Any> {
             confinedCommandDrain
@@ -112,6 +116,7 @@ open class Model<Domain: Sendable, Id: Equatable & Hashable & Sendable, State: E
             let interactor = Interactor(
                 environ: self.environ,
                 stateGetter: { [weak self] in await self?.domain.state ?? State() },
+                stateObserver: { [weak self] in await self?.domain.observeState() },
                 confinedCommandDrain: self.domain.confinedCommandDrain,
                 confinedCommandSource: self.domain.confinedCommandSource,
                 confinedEffectDrain: self.effectGate.toDrain,
