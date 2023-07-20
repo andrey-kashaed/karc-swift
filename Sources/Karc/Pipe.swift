@@ -174,7 +174,7 @@ public struct Pipe: Sendable {
         id: String,
         recoverFromError: Bool = true,
         source: any Source<SI, SO>,
-        drain: (any Drain<DI, DO>)? = nil as (any Drain<Any, Void>)?,
+        drain: any Drain<DI, DO>,
         instantOutput: SO,
         intro: @escaping (AsyncThrowingStream<II, Error>) -> AsyncThrowingStream<TI, Error>,
         outro: @escaping (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> = { (seq: AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> in
@@ -197,11 +197,29 @@ public struct Pipe: Sendable {
         return Pipe(id: id, recoverFromError: recoverFromError, mode: mode, track: track)
     }
     
+    public static func simplex<SI, SO, II, TI, TO>(
+        id: String,
+        recoverFromError: Bool = true,
+        source: any Source<SI, SO>,
+        instantOutput: SO,
+        intro: @escaping (AsyncThrowingStream<II, Error>) -> AsyncThrowingStream<TI, Error>,
+        track: @escaping PipeTrack<TI, TO>
+    ) -> Pipe {
+        let mode: Mode<SI, SO, II, TI, TO, Never, Never> = .simplex(
+            source: source,
+            drain: nil,
+            instantOutput: instantOutput,
+            intro: intro,
+            outro: { _ in fatalError() }
+        )
+        return Pipe(id: id, recoverFromError: recoverFromError, mode: mode, track: track)
+    }
+    
     public static func simplex<SI, SO, TI, TO, DI, DO>(
         id: String,
         recoverFromError: Bool = true,
         source: any Source<SI, SO>,
-        drain: (any Drain<DI, DO>)? = nil as (any Drain<Any, Void>)?,
+        drain: any Drain<DI, DO>,
         instantOutput: SO,
         outro: @escaping (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> = { (seq: AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> in
             switch seq {
@@ -223,11 +241,28 @@ public struct Pipe: Sendable {
         return Pipe(id: id, recoverFromError: recoverFromError, mode: mode, track: track)
     }
     
+    public static func simplex<SI, SO, TI, TO>(
+        id: String,
+        recoverFromError: Bool = true,
+        source: any Source<SI, SO>,
+        instantOutput: SO,
+        track: @escaping PipeTrack<TI, TO>
+    ) -> Pipe {
+        let mode: Mode<SI, SO, TI, TI, TO, Never, Never> = .simplex(
+            source: source,
+            drain: nil,
+            instantOutput: instantOutput,
+            intro: { $0 },
+            outro: { _ in fatalError() }
+        )
+        return Pipe(id: id, recoverFromError: recoverFromError, mode: mode, track: track)
+    }
+    
     public static func duplex<SI, SO, TI, TO, DI, DO>(
         id: String,
         recoverFromError: Bool = true,
         source: any Source<SI, SO>,
-        drain: (any Drain<DI, DO>)? = nil as (any Drain<Any, Void>)?,
+        drain: any Drain<DI, DO>,
         outro: @escaping (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> = { (seq: AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error> in
             switch seq {
             case let seq as AsyncThrowingStream<DI, Error>:
@@ -242,6 +277,20 @@ public struct Pipe: Sendable {
             source: source,
             drain: drain,
             outro: outro
+        )
+        return Pipe(id: id, recoverFromError: recoverFromError, mode: mode, track: track)
+    }
+    
+    public static func duplex<SI, SO, TI, TO>(
+        id: String,
+        recoverFromError: Bool = true,
+        source: any Source<SI, SO>,
+        track: @escaping PipeTrack<TI, TO>
+    ) -> Pipe {
+        let mode: Mode<SI, SO, TI, TI, TO, Never, Never> = .duplex(
+            source: source,
+            drain: nil,
+            outro: { _ in fatalError() }
         )
         return Pipe(id: id, recoverFromError: recoverFromError, mode: mode, track: track)
     }
