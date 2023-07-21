@@ -26,13 +26,13 @@ public final class Connector<Input: Sendable, Output: Sendable>: Scope {
         scheme: Gate<Input, Output>.Scheme,
         capacity: Int = Int.max
     ) {
-        let uid = Uid(tag: tag, id: id).asAny
-        self.uid = uid
+        let gateUid = Uid(tag: tag, id: id).asAny
+        uid = gateUid
         openGate = { environ in
-            try? await environ.openGate(uid: uid, inputType: Input.self, outputType: Output.self, mode: mode, scheme: scheme, capacity: capacity)
+            try? await environ.openGate(uid: gateUid, inputType: Input.self, outputType: Output.self, mode: mode, scheme: scheme, capacity: capacity)
         }
         closeGate = { environ in
-            try? await environ.closeGate(uid: uid, inputType: Input.self, outputType: Output.self)
+            try? await environ.closeGate(uid: gateUid, inputType: Input.self, outputType: Output.self)
         }
     }
     

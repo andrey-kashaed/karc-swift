@@ -16,9 +16,8 @@ import Kasync
 public final class Pipeline: Scope, @unchecked Sendable {
     
     public let uid: AnyUid
-    private let beginPipeFactory: @Sendable () -> Pipe?
-    private let endPipeFactory: @Sendable () -> Pipe?
-    private let pipesFactory: @Sendable () -> [Pipe]
+    private let finalPipeFactory: @Sendable () -> Pipe?
+    private let pipesFactory: @Sendable () async -> [Pipe]
     @AtomicReference(nil as Task<Void, Never>?) private var task
     @AtomicReference(false) private var terminating
     @AtomicReference(false) private var relaunching
@@ -26,20 +25,15 @@ public final class Pipeline: Scope, @unchecked Sendable {
     public init<Id>(
         tag: String = #function,
         id: Id = DefaultId.shared,
-        begin: PipeTrack<Void, Void>? = nil,
-        end: PipeTrack<Void, Void>? = nil,
-        @PipesBuilder pipes: @Sendable @escaping () -> [Pipe]
+        finalTrack: PipeTrack<Void, Void>? = nil,
+        @PipesBuilder pipesFactory: @Sendable @escaping () async -> [Pipe]
     ) where Id: Equatable & Hashable & Sendable {
         self.uid = Uid(tag: tag.components(separatedBy: "(").getOrNil(0) ?? tag, id: id).asAny
-        self.beginPipeFactory = {
-            guard let track = begin else { return nil }
-            return Pipe.finite(id: "begin", count: 1, track: track)
+        self.finalPipeFactory = {
+            guard let finalTrack else { return nil }
+            return Pipe.finite(id: "final", count: 1, track: finalTrack)
         }
-        self.endPipeFactory = {
-            guard let track = end else { return nil }
-            return Pipe.finite(id: "end", count: 1, track: track)
-        }
-        self.pipesFactory = pipes
+        self.pipesFactory = pipesFactory
     }
     
     public func activate(environ: Environ, logger: Logger, modelUid: AnyUid) async {
@@ -51,16 +45,15 @@ public final class Pipeline: Scope, @unchecked Sendable {
     }
     
     private func launch(logger: Logger, modelUid: AnyUid) async {
-        let beginPipe = beginPipeFactory()
-        let endPipe = endPipeFactory()
-        let pipes = pipesFactory()
+        let pipes = await pipesFactory()
+        let finalPipe = finalPipeFactory()
         let barrier = Barrier(requiredParties: pipes.count + 1)
-        let contexts: [String: PipeContext] = (pipes + beginPipe + endPipe).reduce(into: [:]) { (contexts: inout [String: PipeContext], pipe: Pipe) in
+        let contexts: [String: PipeContext] = (pipes + finalPipe).reduce(into: [:]) { (contexts: inout [String: PipeContext], pipe: Pipe) in
             contexts[pipe.id] = PipeContext(
                 modelUid: modelUid,
                 pipelineUid: self.uid,
                 pipeId: pipe.id,
-                barrier: (pipe.id != beginPipe?.id && pipe.id != endPipe?.id) ? barrier : nil,
+                barrier: (pipe.id != finalPipe?.id) ? barrier : nil,
                 logger: logger,
                 pipeline: self
             )
@@ -69,10 +62,6 @@ public final class Pipeline: Scope, @unchecked Sendable {
             contexts[pipeId]!
         }
         await task =^ Task<Void, Never>.detached { [weak self] in
-            if let beginPipe {
-                let context = getContext(pipeId: beginPipe.id)
-                await beginPipe.run(context)
-            }
             await withTaskGroup(of: Void.self) { taskGroup in
                 pipes.forEach { pipe in
                     let _ = taskGroup.addTaskUnlessCancelled {
@@ -82,9 +71,9 @@ public final class Pipeline: Scope, @unchecked Sendable {
                 }
                 await taskGroup.waitForAll()
             }
-            if let endPipe {
-                let context = getContext(pipeId: endPipe.id)
-                await endPipe.run(context)
+            if let finalPipe {
+                let context = getContext(pipeId: finalPipe.id)
+                await finalPipe.run(context)
             }
             guard let self else { return }
             if await self.relaunching^ &&^ (await !self.terminating^) {

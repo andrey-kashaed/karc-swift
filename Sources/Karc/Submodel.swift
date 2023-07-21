@@ -14,8 +14,8 @@
 public final class Submodel: Scope {
     
     public let uid: AnyUid
-    private let settingUpOperation: @Sendable (Environ) async -> Void
-    private let tearingDownOperation: @Sendable () async -> Void
+    private let setUpModel: @Sendable (Environ) async -> Void
+    private let tearDownModel: @Sendable () async -> Void
     
     internal init<Model, Domain, Id: Equatable & Hashable & Sendable, State: Equatable & Sendable & Initable, Command, Effect, Event>(
         type: Model.Type,
@@ -23,20 +23,20 @@ public final class Submodel: Scope {
         state: State
     ) where Model: Karc.Model<Domain, Id, State, Command, Effect, Event>, Domain: Karc.Domain<Id, State, Command, Event> {
         uid = Uid(tag: String(describing: Model.self), id: id).asAny
-        self.settingUpOperation = { environ in
+        self.setUpModel = { environ in
             await Model.setUp(Model.Config(environ: environ, id: id, state: state))
         }
-        self.tearingDownOperation = {
+        self.tearDownModel = {
             await Model.tearDown(id: id)
         }
     }
     
     public func activate(environ: Environ, logger: Logger, modelUid: AnyUid) async {
-        await settingUpOperation(environ)
+        await setUpModel(environ)
     }
     
     public func deactivate(environ: Environ, logger: Logger, modelUid: AnyUid) async {
-        await tearingDownOperation()
+        await tearDownModel()
     }
     
 }

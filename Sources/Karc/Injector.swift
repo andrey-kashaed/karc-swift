@@ -14,25 +14,26 @@
 public struct Injector<R>: Scope {
     
     public let uid: AnyUid
-    private let acquireOperation: @Sendable (Environ) async -> Void
-    private let releaseOperation: @Sendable (Environ) async -> Void
+    private let acquireResource: @Sendable (Environ) async -> Void
+    private let releaseResource: @Sendable (Environ) async -> Void
     
     public init<Id: Equatable & Hashable & Sendable>(id: Id = DefaultId.shared) {
-        uid = Uid(tag: String(describing: R.self), id: id).asAny
-        acquireOperation = { environ in
-            try? await environ.acquire(R.self, id: id)
+        let resourceUid = Uid(tag: String(describing: R.self), id: id).asAny
+        uid = resourceUid
+        acquireResource = { environ in
+            try? await environ.acquireResource(uid: resourceUid)
         }
-        releaseOperation = { environ in
-            try? await environ.release(R.self, id: id)
+        releaseResource = { environ in
+            try? await environ.releaseResource(uid: resourceUid)
         }
     }
     
     public func activate(environ: Environ, logger: Logger, modelUid: AnyUid) async {
-        await acquireOperation(environ)
+        await acquireResource(environ)
     }
     
     public func deactivate(environ: Environ, logger: Logger, modelUid: AnyUid) async {
-        await releaseOperation(environ)
+        await releaseResource(environ)
     }
     
 }

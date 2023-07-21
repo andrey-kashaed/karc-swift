@@ -56,7 +56,7 @@ public final class Environ: @unchecked Sendable {
     private var resourceReleaseOperations = [String: @Sendable (Any) async throws -> Void]()
     private var resourceCounters = [AnyUid: Int]()
     private var resources = [AnyUid: Any]()
-    private let mutex = Mutex()
+    private let resourceMutex = Mutex()
     
     private var gates = [AnyUid: Any]()
     private let gateMutex = Mutex()
@@ -64,96 +64,90 @@ public final class Environ: @unchecked Sendable {
     public init() {}
     
     public func setConfig<T>(key: String, value: T) async {
-        await mutex.atomic {
+        await resourceMutex.atomic {
             configs[key] = value
         }
     }
     
     public func removeConfig(key: String) async {
-        await mutex.atomic {
+        await resourceMutex.atomic {
             configs.removeValue(forKey: key)
         }
     }
     
     public func getConfig<T>(key: String) async -> T? {
-        await mutex.atomic {
+        await resourceMutex.atomic {
             configs[key] as? T
         }
     }
     
-    public func register<R, G: Resource>(_ resourceType: R.Type, gatewayType: G.Type) -> Environ {
-        register(
+    public func registerResource<R, G: Resource>(_ resourceType: R.Type, gatewayType: G.Type) -> Environ {
+        registerResource(
             acquire: { configs in
                 let gateway = gatewayType.init()
-                try await gateway.open(configs: configs)
+                try await gateway.acquire(configs: configs)
                 return gateway as! R
             },
             release: { resource in
-                try await (resource as! Resource).close(configs: self.configs)
+                try await (resource as! Resource).release(configs: self.configs)
             }
         )
     }
     
-    public func register<R>(acquire: @Sendable @escaping ([String: Any]) async throws -> R, release: @Sendable @escaping (R) async throws -> Void) -> Environ {
+    public func registerResource<R>(
+        acquire: @Sendable @escaping ([String: Any]) async throws -> R,
+        release: @Sendable @escaping (R) async throws -> Void
+    ) -> Environ {
         let resourceTag = String(describing: R.self)
         resourceAcquireOperations.merge([resourceTag: acquire], uniquingKeysWith: { (_, last) in last })
         resourceReleaseOperations.merge([resourceTag: ~release], uniquingKeysWith: { (_, last) in last })
         return self
     }
     
-    public func acquire<R, Id: Equatable & Hashable & Sendable>(_ resourceType: R.Type, id: Id = DefaultId.shared) async throws {
-        try await mutex.atomic {
-            let resourceTag = String(describing: R.self)
-            let resourceUid = Uid(tag: resourceTag, id: id).asAny
-            let counter = resourceCounters[resourceUid] ?? 0
+    internal func acquireResource(uid: AnyUid) async throws {
+        try await resourceMutex.atomic {
+            let counter = resourceCounters[uid] ?? 0
             if counter == 0 {
-                guard let resourceAcquireOperation = resourceAcquireOperations[resourceTag] else {
-                    throw ResourceAcquireOperationInconsistencyError(resourceTag: resourceTag)
+                guard let resourceAcquireOperation = resourceAcquireOperations[uid.tag] else {
+                    throw ResourceAcquireOperationInconsistencyError(resourceTag: uid.tag)
                 }
-                let resource: R = try await resourceAcquireOperation(configs) as! R
-                resources[resourceUid] = resource
+                let resource = try await resourceAcquireOperation(configs)
+                resources[uid] = resource
             } else if counter < 0 {
-                throw ResourceCounterInconsistencyError(resourceUid: resourceUid)
+                throw ResourceCounterInconsistencyError(resourceUid: uid)
             }
-            resourceCounters[resourceUid] = counter + 1
+            resourceCounters[uid] = counter + 1
         }
     }
     
-    public func release<R, Id: Equatable & Hashable & Sendable>(_ resourceType: R.Type, id: Id = DefaultId.shared) async throws {
-        try await mutex.atomic {
-            let resourceTag = String(describing: R.self)
-            let resourceUid = Uid(tag: resourceTag, id: id).asAny
-            guard let counter = resourceCounters[resourceUid] else {
-                throw ResourceCounterInconsistencyError(resourceUid: resourceUid)
+    internal func releaseResource(uid: AnyUid) async throws {
+        try await resourceMutex.atomic {
+            guard let counter = resourceCounters[uid] else {
+                throw ResourceCounterInconsistencyError(resourceUid: uid)
             }
             if counter == 1 {
-                guard let resourceReleaseOperation = resourceReleaseOperations[resourceTag] else {
-                    throw ResourceReleaseOperationInconsistencyError(resourceTag: resourceTag)
+                guard let resourceReleaseOperation = resourceReleaseOperations[uid.tag] else {
+                    throw ResourceReleaseOperationInconsistencyError(resourceTag: uid.tag)
                 }
-                guard let resource = resources[resourceUid] else {
-                    throw NoResourceFoundError(resourceUid: resourceUid)
+                guard let resource = resources[uid] else {
+                    throw NoResourceFoundError(resourceUid: uid)
                 }
                 try await resourceReleaseOperation(resource)
-                resources.removeValue(forKey: resourceUid)
+                resources.removeValue(forKey: uid)
             } else if counter < 1 {
-                throw ResourceCounterInconsistencyError(resourceUid: resourceUid)
+                throw ResourceCounterInconsistencyError(resourceUid: uid)
             }
-            resourceCounters[resourceUid] = counter - 1
+            resourceCounters[uid] = counter - 1
         }
     }
     
-    public func resolve<R, Id: Equatable & Hashable & Sendable>(id: Id = DefaultId.shared) async throws -> R {
-        try await mutex.atomic {
-            let resourceUid = Uid(tag: String(describing: R.self), id: id).asAny
-            guard let resource = resources[resourceUid] as? R else {
-                throw NoResourceFoundError(resourceUid: resourceUid)
+    internal func resource<R>(uid: AnyUid) async throws -> R {
+        try await resourceMutex.atomic {
+            guard let resource = resources[uid] as? R else {
+                throw NoResourceFoundError(resourceUid: uid)
             }
             return resource
         }
-    }
-    
-    public func resolve<R, Id: Equatable & Hashable & Sendable>(_ resourceType: R.Type, id: Id = DefaultId.shared) async throws -> R {
-        try await resolve(id: id)
     }
     
     internal func openGate<Input: Sendable, Output: Sendable>(
@@ -197,55 +191,32 @@ public final class Environ: @unchecked Sendable {
     
 }
 
-public extension Environ {
-    
-    @discardableResult
-    func use<R, T, Id: Equatable & Hashable & Sendable>(id: Id = DefaultId.shared, _ operation: @escaping (R) async throws -> T) async throws -> T {
-        var result: Result<T, Error>? = nil
-        do {
-            try await acquire(R.self, id: id)
-            let resource: R = try await resolve(id: id)
-            result = .success(try await operation(resource))
-        } catch {
-            result = .failure(error)
-        }
-        try? await release(R.self, id: id)
-        switch result! {
-        case .success(let t):
-            return t
-        case .failure(let error):
-            throw error
-        }
-    }
-    
-}
-
 public protocol Resource: Sendable {
     init()
-    func open(configs: [String: Any]) async throws
-    func close(configs: [String: Any]) async throws
+    func acquire(configs: [String: Any]) async throws
+    func release(configs: [String: Any]) async throws
 }
 
 public extension Resource {
-    func open(configs: [String: Any]) async throws {}
-    func close(configs: [String: Any]) async throws {}
+    func acquire(configs: [String: Any]) async throws {}
+    func release(configs: [String: Any]) async throws {}
 }
 
 @propertyWrapper
-public struct Inject<R, Id: Equatable & Hashable & Sendable>: Sendable {
+public struct Inject<R>: Sendable {
     
     public final class Safeguard: @unchecked Sendable {
         
         private let environ: Environ
-        private let id: Id
+        private let resourceUid: AnyUid
         
-        fileprivate init(_ environ: Environ, id: Id) {
+        fileprivate init(_ environ: Environ, resourceUid: AnyUid) {
             self.environ = environ
-            self.id = id
+            self.resourceUid = resourceUid
         }
         
         fileprivate func getResource() async throws -> R {
-            try await environ.resolve(id: id)
+            try await environ.resource(uid: resourceUid)
         }
         
     }
@@ -275,8 +246,8 @@ public struct Inject<R, Id: Equatable & Hashable & Sendable>: Sendable {
         blockingSafeguard
     }
     
-    public init(_ environ: Environ, id: Id = DefaultId.shared) {
-        let safeguard = Safeguard(environ, id: id)
+    public init<Id: Equatable & Hashable & Sendable>(_ environ: Environ, id: Id = DefaultId.shared) {
+        let safeguard = Safeguard(environ, resourceUid: Uid(tag: String(describing: R.self), id: id).asAny)
         let blockingSafeguard = BlockingSafeguard(safeguard: safeguard)
         self.safeguard = safeguard
         self.blockingSafeguard = blockingSafeguard
@@ -285,41 +256,41 @@ public struct Inject<R, Id: Equatable & Hashable & Sendable>: Sendable {
 }
 
 @propertyWrapper
-public struct Use<R, Id: Equatable & Hashable & Sendable>: Sendable {
+public struct Use<R>: Sendable {
     
     public final class Safeguard: @unchecked Sendable {
         
         private let environ: Environ
-        private let id: Id
+        private let resourceUid: AnyUid
         @UncheckedReference private var acquired: Bool
         
         fileprivate let getResource: @Sendable () async throws -> R
         
-        fileprivate init(_ environ: Environ, id: Id = DefaultId.shared) {
+        fileprivate init(_ environ: Environ, resourceUid: AnyUid) {
             @UncheckedReference var cachedResource: R? = nil
             @UncheckedReference var acquired = false
             @Atomic var getResource = { @Sendable () async throws -> R in
                 if let resource = cachedResource {
                     return resource
                 }
-                try await environ.acquire(R.self, id: id)
-                let resource: R = try await environ.resolve(id: id)
+                try await environ.acquireResource(uid: resourceUid)
+                let resource: R = try await environ.resource(uid: resourceUid)
                 $acquired =^ true
                 $cachedResource =^ resource
                 return resource
             }
             self.environ = environ
-            self.id = id
+            self.resourceUid = resourceUid
             self._acquired = _acquired
             self.getResource = getResource
         }
         
         deinit {
             let environ = environ
-            let id = id
+            let resourceUid = resourceUid
             if acquired {
                 Task.detached(priority: Task.currentPriority) {
-                    try? await environ.release(R.self, id: id)
+                    try? await environ.releaseResource(uid: resourceUid)
                 }
             }
         }
@@ -351,8 +322,8 @@ public struct Use<R, Id: Equatable & Hashable & Sendable>: Sendable {
         blockingSafeguard
     }
 
-    public init(_ environ: Environ, id: Id = DefaultId.shared, lazy: Bool = true) {
-        let safeguard = Safeguard(environ, id: id)
+    public init<Id: Equatable & Hashable & Sendable>(_ environ: Environ, id: Id = DefaultId.shared, lazy: Bool = true) {
+        let safeguard = Safeguard(environ, resourceUid: Uid(tag: String(describing: R.self), id: id).asAny)
         let blockingSafeguard = BlockingSafeguard(safeguard: safeguard)
         self.safeguard = safeguard
         self.blockingSafeguard = blockingSafeguard
@@ -373,9 +344,9 @@ public struct Connect<Input: Sendable, Output: Sendable>: Sendable {
         private let environ: Environ
         private let gateUid: AnyUid
         
-        fileprivate init<Id: Equatable & Hashable & Sendable>(_ environ: Environ, tag: String, id: Id) {
+        fileprivate init(_ environ: Environ, gateUid: AnyUid) {
             self.environ = environ
-            gateUid = Uid(tag: tag, id: id).asAny
+            self.gateUid = gateUid
         }
         
         fileprivate func getGate() async throws -> Gate<Input, Output> {
@@ -410,7 +381,7 @@ public struct Connect<Input: Sendable, Output: Sendable>: Sendable {
     }
     
     public init<Id: Equatable & Hashable & Sendable>(_ environ: Environ, tag: String, id: Id = DefaultId.shared) {
-        let safeguard = Safeguard(environ, tag: tag, id: id)
+        let safeguard = Safeguard(environ, gateUid: Uid(tag: tag, id: id).asAny)
         let blockingSafeguard = BlockingSafeguard(safeguard: safeguard)
         self.safeguard = safeguard
         self.blockingSafeguard = blockingSafeguard
@@ -420,19 +391,19 @@ public struct Connect<Input: Sendable, Output: Sendable>: Sendable {
 
 postfix operator ^
 
-public postfix func ^<R, Id: Equatable & Hashable & Sendable>(left: Inject<R, Id>.Safeguard) async throws -> R {
+public postfix func ^<R>(left: Inject<R>.Safeguard) async throws -> R {
     try await left.getResource()
 }
 
-public postfix func ^<R, Id: Equatable & Hashable & Sendable>(left: Inject<R, Id>.BlockingSafeguard) throws -> R {
+public postfix func ^<R>(left: Inject<R>.BlockingSafeguard) throws -> R {
     try left.getResource()
 }
 
-public postfix func ^<R, Id: Equatable & Hashable & Sendable>(left: Use<R, Id>.Safeguard) async throws -> R {
+public postfix func ^<R>(left: Use<R>.Safeguard) async throws -> R {
     try await left.getResource()
 }
 
-public postfix func ^<R, Id: Equatable & Hashable & Sendable>(left: Use<R, Id>.BlockingSafeguard) throws -> R {
+public postfix func ^<R>(left: Use<R>.BlockingSafeguard) throws -> R {
     try left.getResource()
 }
 

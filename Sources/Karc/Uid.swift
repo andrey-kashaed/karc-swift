@@ -40,6 +40,7 @@ public struct AnyUid: Equatable & Hashable & Sendable & CustomStringConvertible 
     private let uid: any Sendable
     private let equals: @Sendable (Any) -> Bool
     private let combineIntoHasher: @Sendable (_ hasher: inout Hasher) -> Void
+    public let tag: String
     
     init<Id>(uid: Uid<Id>) where Id: Equatable & Hashable & Sendable  {
         self.uid = uid
@@ -47,6 +48,7 @@ public struct AnyUid: Equatable & Hashable & Sendable & CustomStringConvertible 
         combineIntoHasher = { @Sendable in
             $0.combine(uid)
         }
+        self.tag = uid.tag
     }
     
     public static func == (lhs: AnyUid, rhs: AnyUid) -> Bool {
