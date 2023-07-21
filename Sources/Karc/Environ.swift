@@ -36,13 +36,30 @@ public final class Environ: @unchecked Sendable {
         public var errorDescription: String? { "Resource release operation inconsistency for tag: \(resourceTag)" }
     }
     
+    public struct GateAlreadyOpenError: LocalizedError {
+        let gateUid: AnyUid
+        public var errorDescription: String? { "Gate already open for uid: \(gateUid)" }
+    }
+    
+    public struct GateAlreadyClosedError: LocalizedError {
+        let gateUid: AnyUid
+        public var errorDescription: String? { "Gate already closed for uid: \(gateUid)" }
+    }
+    
+    public struct NoGateFoundError: LocalizedError {
+        let gateUid: AnyUid
+        public var errorDescription: String? { "No gate found for uid: \(gateUid)" }
+    }
+    
     private var configs = [String: Any]()
     private var resourceAcquireOperations = [String: @Sendable ([String: Any]) async throws -> Any]()
     private var resourceReleaseOperations = [String: @Sendable (Any) async throws -> Void]()
     private var resourceCounters = [AnyUid: Int]()
     private var resources = [AnyUid: Any]()
-    
     private let mutex = Mutex()
+    
+    private var gates = [AnyUid: Any]()
+    private let gateMutex = Mutex()
     
     public init() {}
     
@@ -137,6 +154,45 @@ public final class Environ: @unchecked Sendable {
     
     public func resolve<R, Id: Equatable & Hashable & Sendable>(_ resourceType: R.Type, id: Id = DefaultId.shared) async throws -> R {
         try await resolve(id: id)
+    }
+    
+    internal func openGate<Input: Sendable, Output: Sendable>(
+        uid: AnyUid,
+        inputType: Input.Type,
+        outputType: Output.Type,
+        mode: Gate<Input, Output>.Mode,
+        scheme: Gate<Input, Output>.Scheme,
+        capacity: Int
+    ) async throws {
+        try await gateMutex.atomic {
+            guard gates[uid] == nil else {
+                throw GateAlreadyOpenError(gateUid: uid)
+            }
+            let gate = Gate<Input, Output>(mode: mode, scheme: scheme, capacity: capacity)
+            gates[uid] = gate
+        }
+    }
+    
+    internal func closeGate<Input: Sendable, Output: Sendable>(
+        uid: AnyUid,
+        inputType: Input.Type,
+        outputType: Output.Type
+    ) async throws {
+        guard let gate = await gateMutex.atomic({ gates.removeValue(forKey: uid) }) as? Gate<Input, Output> else {
+            throw GateAlreadyClosedError(gateUid: uid)
+        }
+        gate.seal()
+    }
+    
+    internal func gate<Input: Sendable, Output: Sendable>(
+        uid: AnyUid,
+        inputType: Input.Type,
+        outputType: Output.Type
+    ) async throws -> Gate<Input, Output> {
+        guard let gate = await gateMutex.atomic({ gates[uid] }) as? Gate<Input, Output> else {
+            throw NoGateFoundError(gateUid: uid)
+        }
+        return gate
     }
     
 }
@@ -309,6 +365,59 @@ public struct Use<R, Id: Equatable & Hashable & Sendable>: Sendable {
     
 }
 
+@propertyWrapper
+public struct Connect<Input: Sendable, Output: Sendable>: Sendable {
+    
+    public final class Safeguard: @unchecked Sendable {
+        
+        private let environ: Environ
+        private let gateUid: AnyUid
+        
+        fileprivate init<Id: Equatable & Hashable & Sendable>(_ environ: Environ, tag: String, id: Id) {
+            self.environ = environ
+            gateUid = Uid(tag: tag, id: id).asAny
+        }
+        
+        fileprivate func getGate() async throws -> Gate<Input, Output> {
+            try await environ.gate(uid: gateUid, inputType: Input.self, outputType: Output.self)
+        }
+        
+    }
+    
+    public struct BlockingSafeguard: Sendable {
+        
+        private var safeguard: Safeguard
+        
+        fileprivate init(safeguard: Safeguard) {
+            self.safeguard = safeguard
+        }
+        
+        fileprivate func getGate() throws -> Gate<Input, Output> {
+            try runBlocking { try await safeguard.getGate() }
+        }
+        
+    }
+    
+    private var safeguard: Safeguard
+    private var blockingSafeguard: BlockingSafeguard
+    
+    public var wrappedValue: Safeguard {
+        safeguard
+    }
+    
+    public var projectedValue: BlockingSafeguard {
+        blockingSafeguard
+    }
+    
+    public init<Id: Equatable & Hashable & Sendable>(_ environ: Environ, tag: String, id: Id = DefaultId.shared) {
+        let safeguard = Safeguard(environ, tag: tag, id: id)
+        let blockingSafeguard = BlockingSafeguard(safeguard: safeguard)
+        self.safeguard = safeguard
+        self.blockingSafeguard = blockingSafeguard
+    }
+    
+}
+
 postfix operator ^
 
 public postfix func ^<R, Id: Equatable & Hashable & Sendable>(left: Inject<R, Id>.Safeguard) async throws -> R {
@@ -325,4 +434,12 @@ public postfix func ^<R, Id: Equatable & Hashable & Sendable>(left: Use<R, Id>.S
 
 public postfix func ^<R, Id: Equatable & Hashable & Sendable>(left: Use<R, Id>.BlockingSafeguard) throws -> R {
     try left.getResource()
+}
+
+public postfix func ^<Input: Sendable, Output: Sendable>(left: Connect<Input, Output>.Safeguard) async throws -> Gate<Input, Output> {
+    try await left.getGate()
+}
+
+public postfix func ^<Input: Sendable, Output: Sendable>(left: Connect<Input, Output>.BlockingSafeguard) throws -> Gate<Input, Output> {
+    try left.getGate()
 }
