@@ -2,7 +2,7 @@
 
 ***Karc*** is a library simplifying architectural program design in Swift.
 
-[![Latest Release](https://img.shields.io/badge/Latest%20Release-0.2.0-green)](https://github.com/andrey-kashaed/karc-swift/releases/tag/0.2.0)
+[![Latest Release](https://img.shields.io/badge/Latest%20Release-0.3.0-green)](https://github.com/andrey-kashaed/karc-swift/releases/tag/0.3.0)
 [![Swift](https://img.shields.io/badge/Swift-5.8-yellow)](https://www.swift.org/blog/swift-5.8-released)
 ![Platforms](https://img.shields.io/badge/Platforms-macOS%2013.0%2B%20%7C%20iOS%2016.0%2B%20%7C%20tvOS%2016.0%2B%20%7C%20watchOS%209.0%2B-red)
 [![License](https://img.shields.io/badge/License-CDDL--1.0-blue)](https://opensource.org/licenses/CDDL-1.0)
@@ -170,8 +170,8 @@ Every [`Model`](#model) has own [`Interactor`](#interactor) which is passed as c
 fileprivate extension TestModel.Interactor {
 
     func main() -> Pipeline {
-        @Inject<StorageResource, DefaultId>(environ) var storage
-        @Use<WebResource, DefaultId>(environ) var web
+        @Inject<StorageResource>(environ) var storage
+        @Use<WebResource>(environ) var web
         return Pipeline {
             Pipe(id: "bootstrap", policy: .finite(count: 1)) { _, context in
                 if let account = await storage.readAccount() {
@@ -238,8 +238,8 @@ As we can see from code above, we used `@Inject` and `@Use` property wrappers in
 fileprivate extension TestModel.Interactor {
 
     func messaging() -> Pipeline {
-        @Inject<StorageResource, DefaultId>(environ) var storage
-        @Use<WebResource, DefaultId>(environ) var web
+        @Inject<StorageResource>(environ) var storage
+        @Use<WebResource>(environ) var web
         let incomingMessageGate = Gate<EncryptedMessage, Void>(mode: .retainable(), scheme: .anycast)
         let outgoingMessageGate = Gate<EncryptedMessage, Void>(mode: .retainable(), scheme: .anycast)
         return Pipeline(
@@ -437,6 +437,7 @@ open func scopes(state: State, i: Interactor) -> [Scope]
 >     override func scopes(_ s: TestState, _ i: Interactor) -> [Scope] {
 >         ChildModel.submodel() // Submodel scope
 >         Injector<StorageResource>() // Resource injector scope
+>         Connector<Int, Void>(tag: "test-gate", mode: .transient, scheme: .anycast) // Connector scope
 >         i.main // pipeline scope
 >         if s.account != nil {
 >             i.messaging // another pipeline scope
@@ -687,56 +688,28 @@ public var eventSource: some Source<Event, Void>
 
 ## <a id="environ"></a> Environ ##
 
-`Environ` encapsulates application *resource dependencies*.
+`Environ` encapsulates application *dependencies*.
 
 ---
 
 ```swift
-public func register<R, G: Resource>(_ resourceType: R.Type, gatewayType: G.Type) -> Environ
+public func registerResource<R, G: Resource>(_ resourceType: R.Type, gatewayType: G.Type) -> Environ
 ```
 > Registers *resource dependency* of type `R` with *gateway implementation* of type `G`.
 
 ---
 
 ```swift
-public func register<R>(acquire: @Sendable @escaping ([String: Any]) async throws -> R, release: @Sendable @escaping (R) async throws -> Void) -> Environ
+public func registerResource<R>(acquire: @Sendable @escaping ([String: Any]) async throws -> R, release: @Sendable @escaping (R) async throws -> Void) -> Environ
 ```
 > Registers *resource dependency* of type `R`.
-
----
-
-```swift
-public func resolve<R, Id: Equatable & Hashable & Sendable>(id: Id = DefaultId.shared) async throws -> R
-```
-> Resolves *resource dependency* of type `R` with `id` of type `Id`.
-
----
-
-```swift
-public func resolve<R, Id: Equatable & Hashable & Sendable>(_ resourceType: R.Type, id: Id = DefaultId.shared) async throws -> R
-```
-> Resolves *resource dependency* of type `R` with `id` of type `Id`.
-
----
-
-```swift
-public func acquire<R, Id: Equatable & Hashable & Sendable>(_ resourceType: R.Type, id: Id = DefaultId.shared) async throws
-```
-> Acquires *resource dependency* of type `R` with `id` of type `Id`.
-
----
-
-```swift
-public func release<R, Id: Equatable & Hashable & Sendable>(_ resourceType: R.Type, id: Id = DefaultId.shared) async throws
-```
-> Releases *resource dependency* of type `R` with `id` of type `Id`.
 
 ---
 
 You can take advantage of `Inject` *property wrapper* in order to inject *resource dependency*.
 
 ```swift
-@Inject<StorageResource, DefaultId>(environ) var storage
+@Inject<StorageResource>(environ) var storage
 ```
 
 > <a id="note_inject"></a>
@@ -746,12 +719,22 @@ You can take advantage of `Inject` *property wrapper* in order to inject *resour
 You can also take advantage of `Use` *property wrapper* in order to use *resource dependency* on demand.
 
 ```swift
-@Use<WebResource, DefaultId>(environ) var web
+@Use<WebResource>(environ) var web
 ```
 
 > <a id="note_use"></a>
 > 
 > **Note**: `@Use` property wrapper provides [RAII](https://en.wikipedia.org/wiki/Resource_acquisition_is_initialization) mechanism. It means that *resource dependency* will be acquired on first usage of `web` variable and will be released during variable deinitialization.
+
+Finally you can take advantage of `Connect` *property wrapper* in order to use *gate dependency* on demand.
+
+```swift
+@Connect<Int, Void>(environ, tag: "test-gate") var testGate
+```
+
+> <a id="note_connect"></a>
+> 
+> **Note**: `@Connect` property wrapper provides *gate dependency* which also may be used as *drain* or *source* if you already have active corresponding `Connector<Int, Void>` scope.
 
 ## <a id="pipeline"></a> Pipeline ##
 
@@ -763,11 +746,10 @@ You can also take advantage of `Use` *property wrapper* in order to use *resourc
 public init(
     tag: String = #function,
     id: Id = DefaultId.shared,
-    begin: PipeTrack<Void, Void>? = nil,
-    end: PipeTrack<Void, Void>? = nil,
-    @PipeBuilder pipes: @escaping () -> [Pipe])
+    finalTrack: PipeTrack<Void, Void>? = nil,
+    @PipesBuilder pipesFactory: @Sendable @escaping () async -> [Pipe])
 ```
-> Creates an instance of `Pipeline`. Parameter `begin` defines a closure of `(Void, PipeContext) async throws -> Void` type which will be executed before all *pipes* defined in `pipesFactory` starts execution. Parameter `end` defines a closure of `(Void, PipeContext) async throws -> Void` type which will be executed after all *pipes* defined in `pipes` stops execution. Parameter `pipes` defines collection of independent [`Pipe`](#pipe) instances.
+> Creates an instance of `Pipeline`. Parameter `finalTrack` defines a closure of `(Void, PipeContext) async throws -> Void` type which will be executed after all *pipes* defined in `pipesFactory` stops execution. Parameter `pipesFactory` defines collection of independent [`Pipe`](#pipe) instances.
 
 ---
 
@@ -782,7 +764,7 @@ public static func simplex<SI, SO, II, TI, TO, DI, DO>(
     id: String,
     recoverFromError: Bool = true,
     source: any Source<SI, SO>,
-    drain: (any Drain<DI, DO>)?,
+    drain: any Drain<DI, DO>,
     instantOutput: SO,
     intro: @escaping (AsyncThrowingStream<II, Error>) -> AsyncThrowingStream<TI, Error>,
     outro: @escaping (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error>,
@@ -804,7 +786,7 @@ public static func duplex<SI, SO, TI, TO, DI, DO>(
     id: String,
     recoverFromError: Bool = true,
     source: any Source<SI, SO>,
-    drain: (any Drain<DI, DO>)?,
+    drain: any Drain<DI, DO>,
     outro: @escaping (AsyncThrowingStream<TO, Error>) -> AsyncThrowingStream<DI, Error>,
     track: @escaping PipeTrack<TI, TO>
 ) -> Pipe
